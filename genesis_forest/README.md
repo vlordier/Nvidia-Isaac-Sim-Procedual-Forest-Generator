@@ -1,133 +1,111 @@
 # Genesis Forest Generator
 
-Procedural forest generation using **OpenUSD** + **Genesis Physics** + **Gradio UI** + **UE5 Rendering**.
+Procedural forest generation: **OpenUSD** + **Genesis Physics** + **Gradio UI** + **UE5 Rendering**.
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  Gradio Web UI                                                   │
-│  Tree density, age, proportions, terrain roughness, etc.         │
-└────────────────────────────┬─────────────────────────────────────┘
-                             │ REST / form POST
-                             ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  Python Backend                                                   │
-│                                                                   │
-│  ┌──────────────┐   ┌─────────────────┐   ┌──────────────────┐  │
-│  │ OpenUSD pxr  │◄──│ Genesis Physics │──►│ OpenUSD prim Z   │  │
-│  │ (scene def)  │   │ (terrain, ray-  │   │ (corrected from  │  │
-│  │              │   │  cast heights)   │   │  raycast)        │  │
-│  └──────────────┘   └─────────────────┘   └──────────────────┘  │
-│       │                                                        │
-│       │ USD file (.usda / .usdc)                               │
-└───────┼────────────────────────────────────────────────────────┘
-        │
-        ▼
-┌──────────────────────────────────────────────────────────────────┐
-│  UE5 (Rendering only)                                             │
-│  USDImporter plugin → Lumen + Nanite                             │
-└──────────────────────────────────────────────────────────────────┘
+Gradio UI  ────►  Python Backend  ────►  Genesis (physics + GPU raycast)
+                                       │
+                                       ▼
+                               OpenUSD stage (.usdc)
+                                       │
+                                       ▼
+                               UE5 (Lumen + Nanite)
 ```
 
 ## Installation
 
 ```bash
 pip install genesis-world gradio numpy scipy noise
-
-# Optional: for USD support with material baking
-pip install -e ".[usd]"
-export OMNI_KIT_ACCEPT_EULA=yes
+# Optional: for OpenUSD Python bindings (alternative to Isaac Sim's pxr)
+pip install usd-core
 ```
+
+Genesis auto-detects hardware: **NVIDIA CUDA** → **AMD ROCm** → **Apple Metal** → **CPU**.
 
 ## Quick Start
-
-### 1. Configure asset paths
-
-Edit `backend/forest_generator.py` or pass `asset_base_path` to `ForestConfig`:
-
-```python
-config = ForestConfig(
-    asset_base_path="D:/temp_downloads",
-    # ...
-)
-```
-
-Assets expected:
-```
-D:/temp_downloads/
-  Birch_obj/Birch.usd
-  Spruce_obj/Spruce.usd
-  Pine_obj/Pine.usd
-  Rock_obj/Rock.usd
-  Bush_obj/Bush.usd
-  Blueberry_obj/Blueberry.usd
-```
-
-### 2. Generate a forest
 
 ```bash
 cd genesis_forest
 python -m examples.simple_forest
+# → forest_output.usda
 ```
-
-### 3. Open in UE5
-
-1. Open UE5 with USDImporter plugin enabled
-2. File → Import into Level → select `forest_output.usda`
-3. Enable Lumen + Nanite in Project Settings
-
-## Running the Gradio UI
 
 ```bash
-cd genesis_forest
 python -m gradio_app.app
+# → http://localhost:7860
 ```
-
-Then open `http://localhost:7860` in your browser.
 
 ## Architecture
 
-| Component | Technology | Role |
-|-----------|------------|------|
-| Scene definition | OpenUSD (`pxr.Usd*`) | Platform-neutral scene description |
-| Physics + raycasting | Genesis | Terrain heightfield, ground height via raycast |
-| UI | Gradio | Web-based parameter controls |
-| Rendering | UE5 | Lumen GI, Nanite, HDRI sky |
-
-## Key Modules
-
-| File | Description |
-|------|-------------|
-| `backend/forest_generator.py` | Main orchestration: terrain → placements → raycast → USD |
-| `backend/terrain.py` | Perlin noise terrain generation + heightfield mesh conversion |
-| `backend/tree_placement.py` | Tree/rock/vegetation placement logic + Genesis raycast call |
-| `backend/usd_stage.py` | OpenUSD stage building: prim creation, transforms, collision |
-| `gradio_app/app.py` | Gradio web UI |
-
-## Genesis Raycast Flow
+### Genesis-authoritative pipeline
 
 ```
-Genesis scene.build()
-       │
-       ▼
-For each tree position (x, y, 100):
-  scene.raycast(
-      origin=[x, y, 100],
-      direction=[0, 0, -1],
-      max_distance=200
-  )
-       │
-       ▼
-  ground_z = 100 - result.distance
-       │
-       ▼
-  OpenUSD prim.xformOp:translate = (x, y, ground_z)
+1. build_terrain_genesis()
+     └── Genesis Terrain morph from LOCAL mesh coords
+         (mesh_to_heightfield gets local verts, Genesis applies world pos)
+
+2. place_entities_genesis()
+     └── Place tree/rock/bush entities at Z=100 (high above terrain)
+         Each entity = gs.morphs.URDF loaded asset
+
+3. raycast_heights()
+     └── scene.raycast_batch() — GPU-parallel batched raycast
+         Updates entity Z positions in-place
+
+4. build_usd_stage()
+     └── Query final transforms from Genesis entities
+         Write prims to OpenUSD stage with correct ground Z
+```
+
+### Why Genesis is authoritative
+
+The original Isaac Sim code did sequential Python-raycast → Python-list-update → USD-write.
+Genesis lets us run GPU batched raycasts across all placements simultaneously,
+then query the corrected world transforms directly from the physics engine.
+The USD file reflects exactly what Genesis simulated.
+
+### Key fixes vs naive port
+
+| Issue | Fix |
+|-------|-----|
+| `layer.Import()` wrong for USD refs | `refs.AddReference(usd_path)` |
+| Terrain double-offset | `mesh_to_heightfield` gets LOCAL coords; world pos via Genesis `pos=` |
+| Sequential O(n) raycasts | `scene.raycast_batch()` GPU parallel |
+| CPU-only backend | `_detect_genesis_backend()` → cuda/amdgpu/cpu |
+| Blocking UI | `gr.Progress()` for live feedback |
+| `.usda` for UE5 | `.usdc` (binary) default — 10× faster load |
+| USD stage disconnected from Genesis | Query `entity.get_pos()` / `entity.get_quat()` after raycast |
+
+## Module reference
+
+| File | Role |
+|------|------|
+| `backend/forest_generator.py` | `ForestGenerator`: terrain → place → raycast → USD |
+| `backend/terrain.py` | Perlin noise terrain → heightfield + trimesh (local coords) |
+| `backend/tree_placement.py` | Placement logic + `batch_raycast_heights()` |
+| `backend/usd_stage.py` | OpenUSD stage: `AddReference()`, prim transforms |
+| `gradio_app/app.py` | Gradio UI with `gr.Progress()` |
+
+## UE5 import
+
+```bash
+# Generate binary USD
+python -m examples.ue5_export
+
+# In UE5:
+#   1. Enable USDImporter plugin (built-in)
+#   2. File → Import into Level → forest_ue5.usdc
+#   3. Project Settings → Rendering:
+#        Dynamic Global Illumination: Lumen
+#        Nanite: Enabled
+#        Virtual Shadow Maps: Enabled
 ```
 
 ## Limitations
 
-- HDR dome lighting from `omni.replicator` has no direct equivalent — lighting must be recreated in UE5
-- Physics sync (live) between Genesis and UE5 is not implemented — requires a Python↔Unreal plugin bridge
-- Genesis-USD material baking requires Omniverse Kit EULA acceptance
+- `scene.raycast_batch()` availability depends on Genesis version — fallback to sequential if unavailable
+- HDR dome lighting (from `omni.replicator`) has no Genesis equivalent; recreate in UE5
+- Live physics sync Genesis↔UE5 not implemented (static USD export only)
 
 ## License
 

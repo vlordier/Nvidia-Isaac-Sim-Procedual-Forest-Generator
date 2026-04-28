@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Tuple
 import noise
 
 
@@ -31,7 +31,6 @@ def random_uniform_terrain(
 
     min_h = int(min_height / terrain.vertical_scale)
     max_h = int(max_height / terrain.vertical_scale)
-    step_h = int(step / terrain.vertical_scale)
 
     if seed is None:
         seed = np.random.randint(0, 1000)
@@ -71,7 +70,7 @@ def convert_heightfield_to_trimesh(
     horizontal_scale: float,
     vertical_scale: float,
     slope_threshold: Optional[float] = None,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray]:
     hf = height_field_raw
     num_rows = hf.shape[0]
     num_cols = hf.shape[1]
@@ -129,12 +128,31 @@ def generate_terrain(
     vertical_scale: float = 0.005,
     roughness: float = 1.0,
     slope_threshold: float = 1.5,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    seed: Optional[int] = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Generate terrain vertices, triangles, and world transform.
+
+    Returns:
+        vertices: LOCAL mesh coords (for Genesis mesh_to_heightfield)
+        triangles: face indices
+        position: world position offset (for USD stage)
+        orientation: world orientation (quaternion, for USD stage)
+
+    Note: position/orientation are for USD prim placement.
+    Vertices are returned in LOCAL space (origin at 0,0,0).
+    mesh_to_heightfield should receive LOCAL vertices + Genesis pos=(0,0,0).
+    """
     num_rows = int(width / horizontal_scale)
     num_cols = int(length / horizontal_scale)
     heightfield = np.zeros((num_rows, num_cols), dtype=np.int16)
 
-    terrain = SubTerrain(width=num_rows, length=num_cols, vertical_scale=vertical_scale, horizontal_scale=horizontal_scale)
+    terrain = SubTerrain(
+        width=num_rows,
+        length=num_cols,
+        vertical_scale=vertical_scale,
+        horizontal_scale=horizontal_scale,
+    )
 
     half_roughness = roughness / 2.0
     terrain = random_uniform_terrain(
@@ -143,6 +161,7 @@ def generate_terrain(
         max_height=half_roughness,
         step=0.01,
         downsampled_scale=0.5,
+        seed=seed,
     )
 
     heightfield[0:num_rows, :] = terrain.height_field_raw[0:num_rows, 0:num_cols]

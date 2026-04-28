@@ -1,4 +1,11 @@
-from .forest_generator import ForestGenerator, ForestConfig, ForestState
+from .forest_generator import (
+    ForestGenerator,
+    ForestConfig,
+    GenerationResult,
+    HeightSampler,
+    USDStageBuilder,
+    _detect_genesis_backend,
+)
 from .usd_stage import USDStage
 from .terrain import generate_terrain, SubTerrain, convert_heightfield_to_trimesh
 from .tree_placement import (
@@ -6,14 +13,15 @@ from .tree_placement import (
     generate_tree_placements,
     generate_rock_placements,
     generate_vegetation_placements,
-    place_trees_with_raycast,
     euler_to_quaternion,
 )
 
 __all__ = [
     "ForestGenerator",
     "ForestConfig",
-    "ForestState",
+    "GenerationResult",
+    "HeightSampler",
+    "USDStageBuilder",
     "USDStage",
     "generate_terrain",
     "SubTerrain",
@@ -22,6 +30,6 @@ __all__ = [
     "generate_tree_placements",
     "generate_rock_placements",
     "generate_vegetation_placements",
-    "place_trees_with_raycast",
     "euler_to_quaternion",
+    "_detect_genesis_backend",
 ]

@@ -2,21 +2,20 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import Optional, Literal
+from typing import Optional, Literal, List, Tuple
 
 import numpy as np
-import genesis as gs
 
 
 @dataclass
 class TreePlacement:
-    tree_type: Literal["Birch", "Spruce", "Pine"]
+    tree_type: Literal["Birch", "Spruce", "Pine", "Rock", "Blueberry", "Bush"]
     position: np.ndarray
     rotation: np.ndarray
     scale: np.ndarray
 
 
-def euler_to_quaternion(roll: float, pitch: float, yaw: float) -> tuple[float, float, float, float]:
+def euler_to_quaternion(roll: float, pitch: float, yaw: float) -> Tuple[float, float, float, float]:
     roll_rad = np.radians(roll)
     pitch_rad = np.radians(pitch)
     yaw_rad = np.radians(yaw)
@@ -49,15 +48,12 @@ def generate_tree_placements(
     area_y: float,
     age_min: int,
     age_max: int,
-    height_multiplier_base: float = 1.35,
-) -> list[TreePlacement]:
+) -> List[TreePlacement]:
     total_trees = int(density * (area_x * area_y) / 100.0)
-
     area_x_half = (area_x / 2.0) - 0.4
     area_y_half = (area_y / 2.0) - 0.4
 
-    placements = []
-
+    placements: List[TreePlacement] = []
     n_birch = int(total_trees * birch_p / 100)
     n_spruce = int(total_trees * spruce_p / 100)
     n_pine = total_trees - n_birch - n_spruce
@@ -88,51 +84,23 @@ def _make_tree_placement(
 
     x = random.uniform(-area_x_half, area_x_half)
     y = random.uniform(-area_y_half, area_y_half)
-    position = np.array([x, y, 100.0])
-
+    position = np.array([x, y, 0.0])
     rotation = random_yaw_rotation()
     scale_vec = np.array([scale, scale, height])
 
     return TreePlacement(tree_type=tree_type, position=position, rotation=rotation, scale=scale_vec)
 
 
-def place_trees_with_raycast(
-    scene: gs.Scene,
-    placements: list[TreePlacement],
-    max_distance: float = 200.0,
-) -> list[TreePlacement]:
-    corrected = []
-
-    for placement in placements:
-        result = scene.raycast(
-            origin=[placement.position[0], placement.position[1], 100.0],
-            direction=[0, 0, -1],
-            max_distance=max_distance,
-        )
-
-        if result.hit:
-            ground_z = 100.0 - result.distance
-            placement.position[2] = ground_z
-            corrected.append(placement)
-
-    return corrected
-
-
-def generate_rock_placements(
-    rockiness: float,
-    area_x: float,
-    area_y: float,
-) -> list[TreePlacement]:
+def generate_rock_placements(rockiness: float, area_x: float, area_y: float) -> List[TreePlacement]:
     total_rocks = int(rockiness * (area_x * area_y) / 100.0)
     area_x_half = (area_x / 2.0) - 0.3
     area_y_half = (area_y / 2.0) - 0.3
 
-    placements = []
-
+    placements: List[TreePlacement] = []
     for _ in range(total_rocks):
         x = random.uniform(-area_x_half, area_x_half)
         y = random.uniform(-area_y_half, area_y_half)
-        position = np.array([x, y, 100.0])
+        position = np.array([x, y, 0.0])
         rotation = random_yaw_rotation()
         scale = np.array([
             random.uniform(0.2, 0.3),
@@ -144,17 +112,12 @@ def generate_rock_placements(
     return placements
 
 
-def generate_vegetation_placements(
-    density: int,
-    area_x: float,
-    area_y: float,
-) -> list[TreePlacement]:
+def generate_vegetation_placements(density: int, area_x: float, area_y: float) -> List[TreePlacement]:
     total_bushes = int(density * (area_x * area_y) / 100.0)
     area_x_half = (area_x / 2.0) - 0.5
     area_y_half = (area_y / 2.0) - 0.5
 
-    placements = []
-
+    placements: List[TreePlacement] = []
     for _ in range(total_bushes):
         if random.randint(0, 1) == 1:
             center_x = random.uniform(-area_x_half, area_x_half)
@@ -172,10 +135,8 @@ def generate_vegetation_placements(
                 temp_x = center_x + random.gauss(0, sigma) + random_float_x
                 temp_y = center_y + random.gauss(0, sigma) + random_float_y
 
-                use_blueberry = random.randint(0, 1) == 1
-                plant_type = "Blueberry" if use_blueberry else "Bush"
-
-                position = np.array([temp_x, temp_y, 100.0])
+                plant_type = "Blueberry" if random.randint(0, 1) == 1 else "Bush"
+                position = np.array([temp_x, temp_y, 0.0])
                 rotation = random_yaw_rotation()
                 scale = np.array([
                     random.uniform(0.8, 1.2),
@@ -186,7 +147,7 @@ def generate_vegetation_placements(
         else:
             x = random.uniform(-area_x_half, area_x_half)
             y = random.uniform(-area_y_half, area_y_half)
-            position = np.array([x, y, 100.0])
+            position = np.array([x, y, 0.0])
             rotation = random_yaw_rotation()
             scale = np.array([
                 random.uniform(0.4, 1.0),

@@ -1,21 +1,20 @@
 [project]
 name = "genesis-forest"
 version = "0.1.0"
-description = "Procedural forest generator using OpenUSD + Genesis + Gradio"
+description = "Procedural forest generator: OpenUSD + Genesis Physics + Gradio + UE5"
 requires-python = ">=3.10,<3.14"
 dependencies = [
-    "genesis-world",
+    "genesis-world>=0.4.0",
     "gradio>=4.0.0",
-    "numpy",
-    "scipy",
+    "numpy>=1.24",
+    "scipy>=1.10",
     "noise",
-    "fastapi",
-    "uvicorn",
+    "torch",  # Genesis dependency
 ]
 
 [project.optional-dependencies]
 usd = [
-    "pxr-usd",
+    "usd-core",  # Pixar USD (pxr) - no NVIDIA dependency
 ]
 dev = [
     "pytest",

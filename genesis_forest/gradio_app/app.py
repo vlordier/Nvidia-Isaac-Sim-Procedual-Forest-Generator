@@ -1,23 +1,9 @@
 from __future__ import annotations
 
+import threading
+from typing import Optional
+
 import gradio as gr
-from dataclasses import dataclass
-
-
-@dataclass
-class UIState:
-    density: int = 10
-    age_min: int = 50
-    age_max: int = 100
-    birch_p: float = 33.33
-    spruce_p: float = 33.33
-    pine_p: float = 33.34
-    area_x: int = 100
-    area_y: int = 100
-    roughness: float = 1.0
-    rockiness: int = 5
-    vegetation_enabled: bool = True
-    vegetation_density: int = 5
 
 
 def normalize_proportions(birch: float, spruce: float, pine: float) -> tuple[float, float, float]:
@@ -28,11 +14,11 @@ def normalize_proportions(birch: float, spruce: float, pine: float) -> tuple[flo
 
 
 def build_ui() -> gr.Blocks:
-    with gr.Blocks(title="Forest Generator") as app:
+    with gr.Blocks(title="Procedural Forest Generator") as app:
         gr.Markdown("# Procedural Forest Generator")
         gr.Markdown(
-            "OpenUSD + Genesis Physics + UE5 Rendering\n\n"
-            "Configure your forest parameters below, then generate."
+            "**Stack**: Gradio + Genesis Physics + OpenUSD + UE5 Rendering\n\n"
+            "Configure forest parameters and generate. Large forests may take a moment."
         )
 
         with gr.Row():
@@ -41,8 +27,8 @@ def build_ui() -> gr.Blocks:
 
                 density = gr.Slider(
                     minimum=1, maximum=100, value=10, step=1,
-                    label="Density (trees per 10x10m area)",
-                    info="Number of trees per 100 square meters",
+                    label="Density (trees per 10×10m)",
+                    info="Higher = more trees",
                 )
 
                 with gr.Row():
@@ -56,11 +42,15 @@ def build_ui() -> gr.Blocks:
                     spruce_p = gr.Number(label="Spruce %", value=33.33, precision=2)
                     pine_p = gr.Number(label="Pine %", value=33.34, precision=2)
 
-                normalise_btn = gr.Button("Normalize Proportions")
+                normalise_btn = gr.Button("Normalize to 100%")
 
                 def on_normalise(b, s, p):
                     nb, ns, np_ = normalize_proportions(b, s, p)
-                    return gr.update(value=round(nb, 2)), gr.update(value=round(ns, 2)), gr.update(value=round(np_, 2))
+                    return (
+                        gr.update(value=round(nb, 2)),
+                        gr.update(value=round(ns, 2)),
+                        gr.update(value=round(np_, 2)),
+                    )
 
                 normalise_btn.click(
                     on_normalise,
@@ -75,28 +65,28 @@ def build_ui() -> gr.Blocks:
                     area_x = gr.Number(label="Length (m)", value=100, precision=0)
                     area_y = gr.Number(label="Width (m)", value=100, precision=0)
 
-                gr.Markdown("## Terrain Parameters")
+                gr.Markdown("## Terrain")
 
                 roughness = gr.Slider(
                     minimum=0.0, maximum=10.0, value=1.0, step=0.1,
-                    label="Elevation Difference (m)",
-                    info="Roughness / elevation range of terrain",
+                    label="Elevation Range (m)",
+                    info="Peak-to-valley height difference",
                 )
 
                 rockiness = gr.Slider(
                     minimum=0, maximum=50, value=5, step=1,
                     label="Rock Density",
-                    info="Rocks per 10x10m area",
+                    info="Rocks per 100m²",
                 )
 
-                gr.Markdown("## Vegetation")
+                gr.Markdown("## Undergrowth")
 
                 vegetation_enabled = gr.Checkbox(label="Generate Undergrowth", value=True)
 
                 density_veg = gr.Slider(
                     minimum=1, maximum=50, value=5, step=1,
                     label="Vegetation Density",
-                    info="Bushes/berry plants per 10x10m area",
+                    info="Bushes/berry plants per 100m²",
                     visible=True,
                 )
 
@@ -110,13 +100,17 @@ def build_ui() -> gr.Blocks:
         with gr.Row():
             output_path = gr.Textbox(
                 label="USD Output Path",
-                value="./forest_output.usda",
-                info="Where to save the generated forest USD file",
+                value="./forest_output",
+                info="Extension (.usda/.usdc) added automatically",
             )
+            use_binary = gr.Checkbox(label="Binary USD (.usdc)", value=True)
 
         generate_btn = gr.Button("Generate Forest", variant="primary", size="lg")
 
-        status = gr.Textbox(label="Status", lines=5, interactive=False)
+        status = gr.Textbox(label="Status", lines=6, interactive=False)
+
+        with gr.Row():
+            gr.Markdown("* UE5 Import: File → Import into Level → select .usda/.usdc *")
 
         generate_btn.click(
             _generate_forest,
@@ -126,15 +120,17 @@ def build_ui() -> gr.Blocks:
                 area_x, area_y,
                 roughness, rockiness,
                 vegetation_enabled, density_veg,
-                output_path,
+                output_path, use_binary,
+                gr.Progress(),
             ],
             outputs=[status],
         )
 
         gr.Markdown("---")
         gr.Markdown(
-            "**Architecture**: Gradio UI → Python Backend → OpenUSD (scene definition) + "
-            "Genesis (physics/raycasting) → USD file → UE5 (rendering)"
+            "**Architecture**: Gradio → Python/Genesis (heightfield sampling + Mesh placement) → OpenUSD → UE5\n\n"
+            "Genesis backend: auto-detected (CPU / AMD GPU / NVIDIA CUDA)\n\n"
+            "Note: Heights are sampled from Genesis terrain heightfield — no raycasting needed."
         )
 
     return app
@@ -154,6 +150,8 @@ def _generate_forest(
     vegetation_enabled: bool,
     density_veg: int,
     output_path: str,
+    use_binary: bool,
+    progress: gr.Progress,
 ) -> str:
     from backend.forest_generator import ForestGenerator, ForestConfig
 
@@ -173,15 +171,31 @@ def _generate_forest(
         vegetation_enabled=vegetation_enabled,
         vegetation_density=density_veg,
         usd_output_path=output_path,
+        use_binary_usd=use_binary,
     )
 
+    def progress_cb(p: float, msg: str):
+        progress(p, desc=msg)
+
     try:
-        generator = ForestGenerator(config)
-        path = generator.generate_to_file(output_path)
-        generator.shutdown()
-        return f"Forest generated successfully!\nOutput: {path}\n\nTrees: {len(generator.state.tree_placements)}\nRocks: {len(generator.state.rock_placements)}\nVegetation: {len(generator.state.vegetation_placements)}"
+        with ForestGenerator(config) as generator:
+            result = generator.generate(progress_cb)
+        return (
+            f"Forest generated successfully!\n\n"
+            f"Output: {result.usd_path}\n\n"
+            f"Trees: {result.n_trees}\n"
+            f"Rocks: {result.n_rocks}\n"
+            f"Vegetation: {result.n_vegetation}\n\n"
+            f"Terrain: {result.terrain_area[0]}m x {result.terrain_area[1]}m "
+            f"(roughness={result.roughness})\n\n"
+            f"Open in UE5: File → Import into Level → {result.usd_path}"
+        )
     except Exception as e:
-        return f"Error: {str(e)}"
+        import traceback
+        return f"Error: {str(e)}\n\n{traceback.format_exc()}"
 
 
 demo = build_ui()
+
+if __name__ == "__main__":
+    demo.launch()

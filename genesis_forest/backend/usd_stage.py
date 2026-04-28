@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import os
 import numpy as np
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from pxr import Gf, Usd, UsdGeom, Sdf, UsdPhysics, PhysxSchema
 
@@ -11,7 +12,6 @@ class USDStage:
     def __init__(
         self,
         output_path: Optional[str] = None,
-        stage_options: Optional[Usd.StagePopulationMask] = None,
     ):
         if output_path:
             self.stage = Usd.Stage.CreateNew(output_path)
@@ -23,7 +23,8 @@ class USDStage:
 
     def _setup_world_defaults(self) -> None:
         stage = self.stage
-        stage.SetDefaultPrim(stage.DefinePrim("/World", "Scope"))
+        world_prim = stage.DefinePrim("/World", "Scope")
+        stage.SetDefaultPrim(world_prim)
 
         physics_scene = UsdPhysics.Scene.Define(stage, Sdf.Path("/World/physicsScene"))
         physics_scene.CreateGravityDirectionAttr().Set(Gf.Vec3f(0.0, 0.0, -1.0))
@@ -34,8 +35,8 @@ class USDStage:
         path: str,
         vertices: np.ndarray,
         triangles: np.ndarray,
-        position: Optional[np.ndarray] = None,
-        orientation: Optional[np.ndarray] = None,
+        position: Optional[Sequence[float]] = None,
+        orientation: Optional[Sequence[float]] = None,
     ) -> UsdGeom.Mesh:
         stage = self.stage
         prim = stage.DefinePrim(f"/World/{path}", "Mesh")
@@ -45,12 +46,11 @@ class USDStage:
         mesh.GetFaceVertexIndicesAttr().Set(triangles.flatten())
         mesh.GetFaceVertexCountsAttr().Set(np.asarray([3] * len(triangles)))
 
+        xformable = UsdGeom.Xformable(prim)
         if position is not None:
-            xform = UsdGeom.Xformable(prim)
-            xform.AddTranslateOp().Set(Gf.Vec3d(*position))
+            xformable.AddTranslateOp().Set(Gf.Vec3d(*position))
         if orientation is not None:
-            xform = UsdGeom.Xformable(prim)
-            xform.AddOrientOp().Set(Gf.Quatd(*orientation))
+            xformable.AddOrientOp().Set(Gf.Quatd(*orientation))
 
         self._add_terrain_collision(prim)
         return mesh
@@ -65,59 +65,89 @@ class USDStage:
 
     def add_tree(
         self,
-        tree_path: str,
+        prim_name: str,
         usd_path: str,
         position: tuple[float, float, float],
-        rotation: Optional[tuple[float, float, float, float]] = None,
-        scale: Optional[tuple[float, float, float]] = None,
+        rotation: tuple[float, float, float, float],
+        scale: tuple[float, float, float],
         parent: str = "/World/Tree_parent",
+    ) -> None:
+        self._add_asset_prim(
+            prim_name=prim_name,
+            usd_path=usd_path,
+            position=position,
+            rotation=rotation,
+            scale=scale,
+            parent=parent,
+            kind="Xform",
+        )
+
+    def add_rock(
+        self,
+        prim_name: str,
+        usd_path: str,
+        position: tuple[float, float, float],
+        rotation: tuple[float, float, float, float],
+        scale: tuple[float, float, float],
+        parent: str = "/World/Rock_parent",
+    ) -> None:
+        self._add_asset_prim(
+            prim_name=prim_name,
+            usd_path=usd_path,
+            position=position,
+            rotation=rotation,
+            scale=scale,
+            parent=parent,
+            kind="Xform",
+        )
+
+    def add_vegetation(
+        self,
+        prim_name: str,
+        usd_path: str,
+        position: tuple[float, float, float],
+        rotation: tuple[float, float, float, float],
+        scale: tuple[float, float, float],
+        parent: str = "/World/Bush_parent",
+    ) -> None:
+        self._add_asset_prim(
+            prim_name=prim_name,
+            usd_path=usd_path,
+            position=position,
+            rotation=rotation,
+            scale=scale,
+            parent=parent,
+            kind="Xform",
+        )
+
+    def _add_asset_prim(
+        self,
+        prim_name: str,
+        usd_path: str,
+        position: tuple[float, float, float],
+        rotation: tuple[float, float, float, float],
+        scale: tuple[float, float, float],
+        parent: str,
+        kind: str = "Xform",
     ) -> None:
         stage = self.stage
 
         parent_prim = stage.GetPrimAtPath(parent)
         if not parent_prim:
-            stage.DefinePrim(parent, "Scope")
+            parent_prim = stage.DefinePrim(parent, "Scope")
 
-        full_path = f"{parent}/{tree_path}"
-        xform = stage.DefinePrim(full_path, "Xform")
+        full_path = f"{parent}/{prim_name}"
+        xform_prim = stage.DefinePrim(full_path, kind)
 
-        stage.DefinePrim(f"{full_path}/Geometry", "Scope")
-        stage.GetRootLayer().Import(usd_path, prim_path=f"{full_path}/Geometry")
+        refs = xform_prim.GetReferences()
+        refs.AddReference(usd_path)
 
-        xformable = UsdGeom.Xformable(xform)
+        xformable = UsdGeom.Xformable(xform_prim)
         xformable.AddTranslateOp().Set(Gf.Vec3d(*position))
+        xformable.AddOrientOp().Set(Gf.Quatd(*rotation))
+        xformable.AddScaleOp().Set(Gf.Vec3d(*scale))
 
-        if rotation:
-            xformable.AddOrientOp().Set(Gf.Quatd(*rotation))
-        else:
-            xformable.AddOrientOp().Set(Gf.Quatd(1, 0, 0, 0))
-
-        if scale:
-            xformable.AddScaleOp().Set(Gf.Vec3d(*scale))
-        else:
-            xformable.AddScaleOp().Set(Gf.Vec3d(1, 1, 1))
-
-    def add_rock(
-        self,
-        rock_path: str,
-        usd_path: str,
-        position: tuple[float, float, float],
-        rotation: Optional[tuple[float, float, float, float]] = None,
-        scale: Optional[tuple[float, float, float]] = None,
-        parent: str = "/World/Rock_parent",
-    ) -> None:
-        self.add_tree(rock_path, usd_path, position, rotation, scale, parent)
-
-    def add_vegetation(
-        self,
-        plant_path: str,
-        usd_path: str,
-        position: tuple[float, float, float],
-        rotation: Optional[tuple[float, float, float, float]] = None,
-        scale: Optional[tuple[float, float, float]] = None,
-        parent: str = "/World/Bush_parent",
-    ) -> None:
-        self.add_tree(plant_path, usd_path, position, rotation, scale, parent)
+        xformable.SetResetXformStack(True)
 
     def remove_prim(self, path: str) -> bool:
         if self.stage.GetPrimAtPath(path):
@@ -135,12 +165,29 @@ class USDStage:
     def clear_terrain(self) -> None:
         self.remove_prim("/World/terrain")
 
-    def save(self, output_path: Optional[str] = None) -> str:
+    def save_usda(self, output_path: Optional[str] = None) -> str:
         path = output_path or self.output_path
         if not path:
             raise ValueError("No output path specified")
+        if not path.endswith(".usda"):
+            path = path.rsplit(".", 1)[0] + ".usda"
         self.stage.GetRootLayer().Export(path)
         return path
 
+    def save_usdc(self, output_path: Optional[str] = None) -> str:
+        path = output_path or self.output_path
+        if not path:
+            raise ValueError("No output path specified")
+        if not path.endswith(".usdc"):
+            path = path.rsplit(".", 1)[0] + ".usdc"
+        self.stage.GetRootLayer().Export(path)
+        return path
+
+    def save(self, output_path: Optional[str] = None) -> str:
+        return self.save_usda(output_path)
+
     def get_root_layer(self) -> Sdf.Layer:
         return self.stage.GetRootLayer()
+
+    def get_stage(self) -> Usd.Stage:
+        return self.stage
