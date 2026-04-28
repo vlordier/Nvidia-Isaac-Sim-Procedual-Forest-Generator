@@ -1,0 +1,31 @@
+[project]
+name = "genesis-forest"
+version = "0.1.0"
+description = "Procedural forest generator using OpenUSD + Genesis + Gradio"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "genesis-world",
+    "gradio>=4.0.0",
+    "numpy",
+    "scipy",
+    "noise",
+    "fastapi",
+    "uvicorn",
+]
+
+[project.optional-dependencies]
+usd = [
+    "pxr-usd",
+]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
