@@ -304,7 +304,7 @@ class ForestGenerator:
                 height_field=hf,
                 horizontal_scale=0.25,
                 vertical_scale=0.005,
-                pos=(float(world_pos[0]), float(world_pos[1]), float(world_pos[2])),
+                pos=(0.0, 0.0, 0.0),
             ),
         )
 
@@ -419,15 +419,19 @@ class ForestGenerator:
         resolved_assets: dict,
         progress_callback: Optional[Callable[[float, str], None]] = None,
     ) -> USDStage:
-        from .forest_generator import USDStageBuilder
+        from .usd_stage import USDStage
 
-        builder = USDStageBuilder()
+        output_path = self.config.usd_output_path
+        usd_path = output_path.rsplit(".", 1)[0] + (".usdc" if self.config.use_binary_usd else ".usda")
 
-        builder.add_terrain(
-            self._terrain_verts,
-            self._terrain_tris,
-            self._terrain_world_pos,
-            self._terrain_world_orient,
+        stage = USDStage(output_path=usd_path)
+
+        stage.define_terrain(
+            path="terrain",
+            vertices=self._terrain_verts,
+            triangles=self._terrain_tris,
+            position=[float(self._terrain_world_pos[0]), float(self._terrain_world_pos[1]), float(self._terrain_world_pos[2])],
+            orientation=[float(self._terrain_world_orient[0]), float(self._terrain_world_orient[1]), float(self._terrain_world_orient[2]), float(self._terrain_world_orient[3])],
         )
 
         n = len(self._entities)
@@ -436,19 +440,41 @@ class ForestGenerator:
             quat = entity.get_quat()
             resolved_path, _ = resolved_assets.get(placement.tree_type, resolved_assets["Birch"])
 
-            builder.add_entity(
-                prim_name=f"{placement.tree_type}_{i:06d}",
-                usd_path=resolved_path,
-                world_pos=(float(pos[0]), float(pos[1]), float(pos[2])),
-                quat=(float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])),
-                scale=(float(placement.scale[0]), float(placement.scale[1]), float(placement.scale[2])),
-                entity_type=placement.tree_type,
-            )
+            pos_tuple = (float(pos[0]), float(pos[1]), float(pos[2]))
+            quat_tuple = (float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3]))
+            scale_tuple = (float(placement.scale[0]), float(placement.scale[1]), float(placement.scale[2]))
+
+            prim_name = f"{placement.tree_type}_{i:06d}"
+
+            if placement.tree_type == "Rock":
+                stage.add_rock(
+                    prim_name=prim_name,
+                    usd_path=resolved_path,
+                    position=pos_tuple,
+                    rotation=quat_tuple,
+                    scale=scale_tuple,
+                )
+            elif placement.tree_type in ("Bush", "Blueberry"):
+                stage.add_vegetation(
+                    prim_name=prim_name,
+                    usd_path=resolved_path,
+                    position=pos_tuple,
+                    rotation=quat_tuple,
+                    scale=scale_tuple,
+                )
+            else:
+                stage.add_tree(
+                    prim_name=prim_name,
+                    usd_path=resolved_path,
+                    position=pos_tuple,
+                    rotation=quat_tuple,
+                    scale=scale_tuple,
+                )
 
             if progress_callback and i % 200 == 0:
                 progress_callback(0.75 + 0.2 * i / n, f"Writing USD prim {i}/{n}")
 
-        return builder
+        return stage
 
     def generate(
         self,
