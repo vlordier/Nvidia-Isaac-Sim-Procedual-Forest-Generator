@@ -25,13 +25,19 @@ def main():
     def progress(p: float, msg: str):
         print(f"[{p:.0%}] {msg}")
 
-    with ForestGenerator(config) as generator:
-        result = generator.generate(progress)
+    try:
+        with ForestGenerator(config) as generator:
+            result = generator.generate(progress)
 
-    print(f"\nSaved to: {result.usd_path}")
-    print(f"Trees: {result.n_trees}")
-    print(f"Rocks: {result.n_rocks}")
-    print(f"Vegetation: {result.n_vegetation}")
+        print(f"\nSaved to: {result.usd_path}")
+        print(f"Trees: {result.n_trees}")
+        print(f"Rocks: {result.n_rocks}")
+        print(f"Vegetation: {result.n_vegetation}")
+        print(f"Genesis version: {result.genesis_version}")
+    except FileNotFoundError as e:
+        print(f"\nAsset error: {e}")
+        print("\nFix: Ensure your tree assets exist at D:/temp_downloads/")
+        print("Or convert USD assets to GLB/OBJ and update asset paths in ASSET_PATHS.")
 
 
 if __name__ == "__main__":

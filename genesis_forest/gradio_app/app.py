@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import threading
-from typing import Optional
-
 import gradio as gr
 
 
@@ -109,8 +106,13 @@ def build_ui() -> gr.Blocks:
 
         status = gr.Textbox(label="Status", lines=6, interactive=False)
 
-        with gr.Row():
-            gr.Markdown("* UE5 Import: File → Import into Level → select .usda/.usdc *")
+        gr.Markdown("---")
+        gr.Markdown(
+            "**Architecture**: Gradio → Python/Genesis (heightfield + fixed static entities + physics settle) → OpenUSD → UE5\n\n"
+            "Genesis backend: auto-detected (CPU / AMD GPU / NVIDIA CUDA)\n\n"
+            "Note: Trees are `fixed=True` (no DOFs) and `collision=False` (static). "
+            "Physics settling via scene.step() makes Genesis authoritative."
+        )
 
         generate_btn.click(
             _generate_forest,
@@ -124,13 +126,6 @@ def build_ui() -> gr.Blocks:
                 gr.Progress(),
             ],
             outputs=[status],
-        )
-
-        gr.Markdown("---")
-        gr.Markdown(
-            "**Architecture**: Gradio → Python/Genesis (heightfield sampling + Mesh placement) → OpenUSD → UE5\n\n"
-            "Genesis backend: auto-detected (CPU / AMD GPU / NVIDIA CUDA)\n\n"
-            "Note: Heights are sampled from Genesis terrain heightfield — no raycasting needed."
         )
 
     return app
@@ -187,9 +182,12 @@ def _generate_forest(
             f"Rocks: {result.n_rocks}\n"
             f"Vegetation: {result.n_vegetation}\n\n"
             f"Terrain: {result.terrain_area[0]}m x {result.terrain_area[1]}m "
-            f"(roughness={result.roughness})\n\n"
+            f"(roughness={result.roughness})\n"
+            f"Genesis: v{result.genesis_version[0]}.{result.genesis_version[1]}\n\n"
             f"Open in UE5: File → Import into Level → {result.usd_path}"
         )
+    except FileNotFoundError as e:
+        return f"Asset not found: {e}\n\nEnsure tree assets exist at the configured path."
     except Exception as e:
         import traceback
         return f"Error: {str(e)}\n\n{traceback.format_exc()}"

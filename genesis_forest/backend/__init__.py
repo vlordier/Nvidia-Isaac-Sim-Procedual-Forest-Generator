@@ -3,8 +3,10 @@ from .forest_generator import (
     ForestConfig,
     GenerationResult,
     HeightSampler,
-    USDStageBuilder,
+    AssetLoader,
     _detect_genesis_backend,
+    _get_genesis_version,
+    _check_usd_support,
 )
 from .usd_stage import USDStage
 from .terrain import generate_terrain, SubTerrain, convert_heightfield_to_trimesh
@@ -21,7 +23,7 @@ __all__ = [
     "ForestConfig",
     "GenerationResult",
     "HeightSampler",
-    "USDStageBuilder",
+    "AssetLoader",
     "USDStage",
     "generate_terrain",
     "SubTerrain",
@@ -32,4 +34,6 @@ __all__ = [
     "generate_vegetation_placements",
     "euler_to_quaternion",
     "_detect_genesis_backend",
+    "_get_genesis_version",
+    "_check_usd_support",
 ]

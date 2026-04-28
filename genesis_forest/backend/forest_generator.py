@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import os
+import warnings
+from pathlib import Path
+from typing import Optional, Callable
+
 import numpy as np
-from typing import Optional, Tuple, Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import genesis as gs
 from genesis.utils.terrain import mesh_to_heightfield
 
-from pathlib import Path
 from .terrain import generate_terrain as _generate_terrain
 from .tree_placement import (
     TreePlacement,
@@ -35,7 +37,117 @@ def _detect_genesis_backend() -> str:
     return gs.cpu
 
 
-import os
+def _get_genesis_version() -> tuple[int, ...]:
+    try:
+        import genesis
+        v = getattr(genesis, "__version__", None)
+        if v is None:
+            v = getattr(genesis, "version", None)
+        if isinstance(v, str):
+            return tuple(int(x) for x in v.split(".")[:2])
+    except Exception:
+        pass
+    return (0, 0)
+
+
+def _check_usd_support() -> bool:
+    try:
+        import usd
+        return True
+    except ImportError:
+        return False
+
+
+SUPPORTED_MESH_EXTENSIONS = {".usd", ".usda", ".usdc", ".obj", ".glb", ".gltf", ".stl", ".ply"}
+
+
+def _find_asset(path: str) -> Optional[str]:
+    p = Path(path)
+    if p.exists():
+        return str(p.resolve())
+    for ext in SUPPORTED_MESH_EXTENSIONS:
+        alt = p.with_suffix(ext)
+        if alt.exists():
+            return str(alt.resolve())
+    return None
+
+
+class AssetLoader:
+    """
+    Resolves and validates mesh assets for Genesis.
+
+    Genesis Mesh morph supports: USD (with [usd] extras), GLB, OBJ, STL, PLY.
+    We try to find the asset with any supported extension, then load with
+    appropriate options for each format.
+    """
+
+    def __init__(self, base_path: str):
+        self.base_path = Path(base_path)
+        self.usd_available = _check_usd_support()
+        self.genesis_version = _get_genesis_version()
+
+    def resolve(self, key: str) -> tuple[Optional[str], Optional[str]]:
+        """
+        Resolve an asset key to a file path.
+
+        Returns:
+            (resolved_path, format_hint) or (None, None) if not found
+
+        format_hint is 'usd', 'glb', or 'obj' for Genesis loader selection.
+        """
+        candidate = self.base_path / key
+        found = _find_asset(str(candidate))
+        if found is None:
+            return None, None
+
+        ext = Path(found).suffix.lower()
+        if ext in (".usd", ".usda", ".usdc"):
+            if not self.usd_available:
+                warnings.warn(
+                    f"USD asset {found} requires 'pip install -e .[usd]' + omniverse-kit. "
+                    f"Skipping. Convert to .glb or .obj for fallback.",
+                    UserWarning,
+                )
+                return None, None
+            return found, "usd"
+        elif ext in (".glb", ".gltf"):
+            return found, "glb"
+        elif ext in (".obj", ".stl", ".ply"):
+            return found, "obj"
+        return found, "obj"
+
+    def mesh_options(
+        self,
+        resolved_path: str,
+        format_hint: str,
+        pos: tuple,
+        quat: tuple,
+        scale: tuple,
+        for_visualization: bool = True,
+    ) -> dict:
+        """
+        Build gs.morphs.Mesh kwargs for a resolved asset.
+
+        Key settings:
+        - fixed=True: no physics DOFs, entity is static
+        - collision=False: no convex hull collision (trees are static)
+        - decimate=False: preserve visual quality (decimation is for physics speed)
+        - parse_glb_with_trimesh=True: use trimesh parser for GLB (better material support)
+        """
+        kwargs = dict(
+            file=resolved_path,
+            pos=pos,
+            quat=quat,
+            scale=scale,
+            fixed=True,
+            collision=False,
+            visualization=for_visualization,
+            decimate=False,
+            convexify=False,
+        )
+        if format_hint == "glb":
+            kwargs["parse_glb_with_trimesh"] = True
+        return kwargs
 
 
 ASSET_PATHS = {
@@ -52,12 +164,8 @@ class HeightSampler:
     """
     Heightfield sampler for terrain.
 
-    Provides O(1) height lookup at any world (x, y) position by sampling
-    the Genesis-compatible heightfield array directly.
-
-    The heightfield coordinate system:
-    - hf[gj, gi] is the height at local position (gi * hs, gj * hs)
-    - where gj = row index (Y direction), gi = col index (X direction)
+    Provides O(1) height lookup at any world (x, y) via bilinear interpolation
+    of the underlying heightfield grid.
     """
 
     def __init__(
@@ -67,136 +175,46 @@ class HeightSampler:
         vertical_scale: float,
         world_pos: tuple[float, float, float],
     ):
-        self.height_field = height_field
+        self.height_field = height_field.astype(np.float64)
         self.horizontal_scale = horizontal_scale
         self.vertical_scale = vertical_scale
         self.world_pos = world_pos
         self.n_rows, self.n_cols = height_field.shape
 
     def sample(self, world_x: float, world_y: float) -> float:
-        """
-        Get terrain height at world (x, y) position.
-        Returns height in world units (meters).
-        """
         local_x = world_x - self.world_pos[0]
         local_y = world_y - self.world_pos[1]
 
-        gi = int(round(local_x / self.horizontal_scale))
-        gj = int(round(local_y / self.horizontal_scale))
+        gi = local_x / self.horizontal_scale
+        gj = local_y / self.horizontal_scale
 
-        gi = max(0, min(gi, self.n_cols - 1))
-        gj = max(0, min(gj, self.n_rows - 1))
+        gi0, gj0 = int(np.floor(gi)), int(np.floor(gj))
+        gi1, gj1 = gi0 + 1, gj0 + 1
 
-        return float(self.height_field[gj, gi] * self.vertical_scale)
+        w00 = (gi1 - gi) * (gj1 - gj)
+        w01 = (gi1 - gi) * (gj - gj0)
+        w10 = (gi - gi0) * (gj1 - gj)
+        w11 = (gi - gi0) * (gj - gj0)
+
+        gi0_c = max(0, min(gi0, self.n_cols - 1))
+        gj0_c = max(0, min(gj0, self.n_rows - 1))
+        gi1_c = max(0, min(gi1, self.n_cols - 1))
+        gj1_c = max(0, min(gj1, self.n_rows - 1))
+
+        h00 = float(self.height_field[gj0_c, gi0_c])
+        h01 = float(self.height_field[gj1_c, gi0_c])
+        h10 = float(self.height_field[gj0_c, gi1_c])
+        h11 = float(self.height_field[gj1_c, gi1_c])
+
+        h = w00 * h00 + w01 * h01 + w10 * h10 + w11 * h11
+        return h * self.vertical_scale
 
     def sample_batch(self, points: np.ndarray) -> np.ndarray:
-        """
-        Batch height sampling for multiple (x, y) world positions.
-
-        Args:
-            points: array of shape (N, 2) with [x, y] world positions
-
-        Returns:
-            array of shape (N,) with heights in meters
-        """
         n = points.shape[0]
-        heights = np.empty(n, dtype=np.float32)
-
+        heights = np.empty(n, dtype=np.float64)
         for i in range(n):
             heights[i] = self.sample(points[i, 0], points[i, 1])
-
         return heights
-
-    def sample_parallel(
-        self,
-        points: np.ndarray,
-        max_workers: int = 32,
-        callback: Optional[Callable[[int, int], None]] = None,
-    ) -> np.ndarray:
-        """
-        Parallel batch height sampling.
-
-        Genesis heightfield sampling is numpy-based (no GIL held during
-        array ops), so ThreadPoolExecutor is effective for large point sets.
-        """
-        n = points.shape[0]
-        if n == 0:
-            return np.array([], dtype=np.float32)
-
-        chunk_size = max(1, n // max_workers)
-        results = np.empty(n, dtype=np.float32)
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {}
-            for start in range(0, n, chunk_size):
-                end = min(start + chunk_size, n)
-                chunk = points[start:end]
-                future = executor.submit(self.sample_batch, chunk)
-                futures[future] = (start, end)
-
-            for i, future in enumerate(as_completed(futures)):
-                start, end = futures[future]
-                results[start:end] = future.result()
-                if callback:
-                    callback(i + 1, max_workers)
-
-        return results
-
-
-class USDStageBuilder:
-    """Builds OpenUSD stage from Genesis entities after placement."""
-
-    def __init__(self):
-        self.stage = USDStage()
-
-    def add_terrain(
-        self,
-        vertices: np.ndarray,
-        triangles: np.ndarray,
-        position: np.ndarray,
-        orientation: np.ndarray,
-    ) -> None:
-        self.stage.define_terrain(
-            "terrain",
-            vertices,
-            triangles,
-            position=position.tolist(),
-            orientation=orientation.tolist(),
-        )
-        self._terrain_verts = vertices
-        self._terrain_tris = triangles
-        self._terrain_pos = position
-        self._terrain_orient = orientation
-
-    def add_entity(
-        self,
-        prim_name: str,
-        usd_path: str,
-        world_pos: tuple[float, float, float],
-        quat: tuple[float, float, float, float],
-        scale: tuple[float, float, float],
-        entity_type: str,
-    ) -> None:
-        parent = "/World/Tree_parent"
-        if entity_type == "Rock":
-            parent = "/World/Rock_parent"
-        elif entity_type in ("Bush", "Blueberry"):
-            parent = "/World/Bush_parent"
-
-        self.stage._add_asset_prim(
-            prim_name=prim_name,
-            usd_path=usd_path,
-            position=world_pos,
-            rotation=quat,
-            scale=scale,
-            parent=parent,
-        )
-
-    def save_usda(self, path: str) -> str:
-        return self.stage.save_usda(path)
-
-    def save_usdc(self, path: str) -> str:
-        return self.stage.save_usdc(path)
 
 
 class ForestGenerator:
@@ -204,47 +222,24 @@ class ForestGenerator:
     Genesis-authoritative procedural forest generator.
 
     Pipeline:
-      1. Build Genesis terrain from heightfield (LOCAL coords to mesh_to_heightfield)
-      2. Create HeightSampler from the same heightfield data
-      3. Generate tree/rock/vegetation placements at Z=0 (terrain surface height)
-         by sampling the HeightSampler
-      4. Place entities in Genesis scene at correct Z (no raycasting needed)
-      5. Query final world transforms from Genesis entities
-      6. Write corrected prims to OpenUSD stage
-
-    Key insight: Genesis terrain is a heightfield. We sample it directly
-    (O(1) per point) instead of raycasting. This is both faster and
-    the correct API for heightfield terrains.
+      1. Validate all asset paths exist
+      2. Build Genesis terrain from heightfield (local coords)
+      3. HeightSampler: O(1) bilinear height lookup at any (x, y)
+      4. Place tree/rock/vegetation entities at correct Z
+         - fixed=True (static, no physics DOFs)
+         - collision=False (no convex hull overhead)
+      5. scene.build() + scene.step() — let physics settle
+      6. Query final transforms from Genesis → write to OpenUSD
     """
 
     def __init__(self, config: Optional["ForestConfig"] = None):
-        from dataclasses import dataclass
-        @dataclass
-        class DefaultConfig:
-            density: int = 10
-            age_min: int = 50
-            age_max: int = 100
-            birch_p: float = 33.33
-            spruce_p: float = 33.33
-            pine_p: float = 33.34
-            area_x: int = 100
-            area_y: int = 100
-            roughness: float = 1.0
-            rockiness: int = 5
-            vegetation_enabled: bool = True
-            vegetation_density: int = 5
-            asset_base_path: str = "D:/temp_downloads"
-            usd_output_path: str = "./forest_output.usda"
-            use_binary_usd: bool = True
-            n_workers: int = 32
-
-        self.config = config or DefaultConfig()
+        self.config = config or ForestConfig()
         self._backend = _detect_genesis_backend()
         self._scene: Optional[gs.Scene] = None
         self._height_sampler: Optional[HeightSampler] = None
         self._entities: list = []
-        self._usd_builder: Optional[USDStageBuilder] = None
         self._closed = False
+        self._genesis_version = _get_genesis_version()
 
     def _init_scene(self) -> gs.Scene:
         if self._scene is not None:
@@ -259,20 +254,32 @@ class ForestGenerator:
         )
         return self._scene
 
-    def _asset_path(self, key: str) -> str:
+    def _validate_assets(self) -> dict[str, tuple[str, str]]:
+        """
+        Validate all required assets exist and can be loaded.
+
+        Returns:
+            dict mapping asset key -> (resolved_path, format_hint)
+
+        Raises:
+            FileNotFoundError if any required asset is missing
+        """
         base = self.config.asset_base_path
-        return str(Path(base) / ASSET_PATHS.get(key, ASSET_PATHS["Birch"]))
+        loader = AssetLoader(base)
+        resolved = {}
+
+        for key, rel_path in ASSET_PATHS.items():
+            found, fmt = loader.resolve(rel_path)
+            if found is None:
+                raise FileNotFoundError(
+                    f"Asset not found: {rel_path} (searched in {base}). "
+                    f"Install USD support: pip install -e .[usd] or convert to .glb/.obj"
+                )
+            resolved[key] = (found, fmt)
+
+        return resolved
 
     def build_terrain(self) -> HeightSampler:
-        """
-        Build Genesis terrain from LOCAL mesh coordinates.
-
-        We generate vertices/triangles in local Genesis coords (origin at terrain corner),
-        pass to mesh_to_heightfield, then create Terrain morph with world pos offset.
-
-        Returns a HeightSampler so we can query terrain height at any (x, y)
-        without needing to raycast.
-        """
         cfg = self.config
         verts, tris, world_pos, world_orient = _generate_terrain(
             width=cfg.area_x,
@@ -320,17 +327,13 @@ class ForestGenerator:
 
     def place_entities(
         self,
+        resolved_assets: dict,
         progress_callback: Optional[Callable[[float, str], None]] = None,
     ) -> None:
-        """
-        Place tree/rock/vegetation entities in Genesis at correct Z heights.
-
-        Heights come from HeightSampler.sample() — direct heightfield lookup,
-        not raycasting. This is O(1) per entity.
-        """
         cfg = self.config
         sampler = self._height_sampler
         scene = self._scene
+        loader = AssetLoader(cfg.asset_base_path)
 
         if progress_callback:
             progress_callback(0.05, "Generating placement data...")
@@ -366,12 +369,10 @@ class ForestGenerator:
         if progress_callback and n_total > 0:
             progress_callback(0.1, f"Computing terrain heights for {n_total} objects...")
 
-        points_xy = np.array([[p.position[0], p.position[1]] for p in all_placements], dtype=np.float32)
-
-        if n_total > 500:
-            heights = sampler.sample_parallel(points_xy, max_workers=cfg.n_workers)
-        else:
-            heights = sampler.sample_batch(points_xy)
+        points_xy = np.array(
+            [[p.position[0], p.position[1]] for p in all_placements], dtype=np.float64
+        )
+        heights = sampler.sample_batch(points_xy)
 
         for placement, ground_z in zip(all_placements, heights):
             placement.position[2] = ground_z
@@ -381,36 +382,45 @@ class ForestGenerator:
 
         for i, placement in enumerate(all_placements):
             p = placement
-            asset_path = self._asset_path(p.tree_type)
+            resolved_path, fmt = resolved_assets.get(p.tree_type, resolved_assets["Birch"])
 
-            entity = scene.add_entity(
-                gs.morphs.Mesh(
-                    file=asset_path,
-                    pos=(float(p.position[0]), float(p.position[1]), float(p.position[2])),
-                    quat=(float(p.rotation[0]), float(p.rotation[1]), float(p.rotation[2]), float(p.rotation[3])),
-                    scale=(float(p.scale[0]), float(p.scale[1]), float(p.scale[2])),
-                    collision=True,
-                    visualization=True,
-                ),
+            mesh_kwargs = loader.mesh_options(
+                resolved_path=resolved_path,
+                format_hint=fmt,
+                pos=(float(p.position[0]), float(p.position[1]), float(p.position[2])),
+                quat=(float(p.rotation[0]), float(p.rotation[1]), float(p.rotation[2]), float(p.rotation[3])),
+                scale=(float(p.scale[0]), float(p.scale[1]), float(p.scale[2])),
             )
 
+            entity = scene.add_entity(gs.morphs.Mesh(**mesh_kwargs))
             self._entities.append((entity, placement))
 
             if progress_callback and i % 200 == 0:
-                progress_callback(0.3 + 0.4 * i / n_total, f"Placing entity {i}/{n_total}")
+                progress_callback(0.3 + 0.3 * i / n_total, f"Placing entity {i}/{n_total}")
 
         self._all_placements = all_placements
 
+    def _settle_physics(self, n_steps: int = 10) -> None:
+        """
+        Run scene.step() to let physics settle.
+
+        Even though trees are fixed (no DOFs), this ensures the terrain
+        collision is properly resolved and Genesis world is consistent.
+
+        With fixed=True entities, scene.step() is essentially free (no joint solving).
+        """
+        if self._scene is None:
+            return
+        for _ in range(n_steps):
+            self._scene.step()
+
     def build_usd_stage(
         self,
+        resolved_assets: dict,
         progress_callback: Optional[Callable[[float, str], None]] = None,
-    ) -> USDStageBuilder:
-        """
-        Query final world transforms from Genesis entities and write to USD.
+    ) -> USDStage:
+        from .forest_generator import USDStageBuilder
 
-        Genesis is authoritative — we read back entity poses after any
-        physics settling to get the true world transforms.
-        """
         builder = USDStageBuilder()
 
         builder.add_terrain(
@@ -424,10 +434,11 @@ class ForestGenerator:
         for i, (entity, placement) in enumerate(self._entities):
             pos = entity.get_pos()
             quat = entity.get_quat()
+            resolved_path, _ = resolved_assets.get(placement.tree_type, resolved_assets["Birch"])
 
             builder.add_entity(
                 prim_name=f"{placement.tree_type}_{i:06d}",
-                usd_path=self._asset_path(placement.tree_type),
+                usd_path=resolved_path,
                 world_pos=(float(pos[0]), float(pos[1]), float(pos[2])),
                 quat=(float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])),
                 scale=(float(placement.scale[0]), float(placement.scale[1]), float(placement.scale[2])),
@@ -437,30 +448,36 @@ class ForestGenerator:
             if progress_callback and i % 200 == 0:
                 progress_callback(0.75 + 0.2 * i / n, f"Writing USD prim {i}/{n}")
 
-        self._usd_builder = builder
         return builder
 
     def generate(
         self,
         progress_callback: Optional[Callable[[float, str], None]] = None,
     ) -> "GenerationResult":
-        """
-        Full pipeline: terrain → height sampling → entity placement → USD stage.
-        """
         if progress_callback:
-            progress_callback(0.0, "Building Genesis terrain + height sampler...")
+            progress_callback(0.0, "Validating assets...")
+
+        resolved_assets = self._validate_assets()
+
+        if progress_callback:
+            progress_callback(0.01, "Building Genesis terrain + height sampler...")
 
         self.build_terrain()
 
         if progress_callback:
             progress_callback(0.05, "Placing entities at terrain heights...")
 
-        self.place_entities(progress_callback)
+        self.place_entities(resolved_assets, progress_callback)
+
+        if progress_callback:
+            progress_callback(0.65, "Settling physics (scene.step())...")
+
+        self._settle_physics(n_steps=10)
 
         if progress_callback:
             progress_callback(0.75, "Writing OpenUSD stage...")
 
-        builder = self.build_usd_stage(progress_callback)
+        builder = self.build_usd_stage(resolved_assets, progress_callback)
 
         output_path = self.config.usd_output_path
         if self.config.use_binary_usd:
@@ -483,6 +500,8 @@ class ForestGenerator:
             n_vegetation=veg_count,
             terrain_area=(self.config.area_x, self.config.area_y),
             roughness=self.config.roughness,
+            genesis_version=self._genesis_version,
+            usd_support=self.config.asset_base_path,
         )
 
     def shutdown(self) -> None:
@@ -498,26 +517,6 @@ class ForestGenerator:
 
     def __exit__(self, *args):
         self.shutdown()
-
-
-class GenerationResult:
-    __slots__ = ("usd_path", "n_trees", "n_rocks", "n_vegetation", "terrain_area", "roughness")
-
-    def __init__(
-        self,
-        usd_path: str,
-        n_trees: int,
-        n_rocks: int,
-        n_vegetation: int,
-        terrain_area: tuple[int, int],
-        roughness: float,
-    ):
-        self.usd_path = usd_path
-        self.n_trees = n_trees
-        self.n_rocks = n_rocks
-        self.n_vegetation = n_vegetation
-        self.terrain_area = terrain_area
-        self.roughness = roughness
 
 
 class ForestConfig:
@@ -563,3 +562,30 @@ class ForestConfig:
         self.usd_output_path = usd_output_path
         self.use_binary_usd = use_binary_usd
         self.n_workers = n_workers
+
+
+class GenerationResult:
+    __slots__ = (
+        "usd_path", "n_trees", "n_rocks", "n_vegetation",
+        "terrain_area", "roughness", "genesis_version", "usd_support",
+    )
+
+    def __init__(
+        self,
+        usd_path: str,
+        n_trees: int,
+        n_rocks: int,
+        n_vegetation: int,
+        terrain_area: tuple[int, int],
+        roughness: float,
+        genesis_version: tuple[int, ...],
+        usd_support: str,
+    ):
+        self.usd_path = usd_path
+        self.n_trees = n_trees
+        self.n_rocks = n_rocks
+        self.n_vegetation = n_vegetation
+        self.terrain_area = terrain_area
+        self.roughness = roughness
+        self.genesis_version = genesis_version
+        self.usd_support = usd_support
