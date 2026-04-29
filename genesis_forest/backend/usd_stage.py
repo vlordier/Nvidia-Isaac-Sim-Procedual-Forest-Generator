@@ -222,7 +222,7 @@ class USDStage:
             mesh_api.GetFaceVertexCountsAttr().Set(np.asarray([3] * len(tris)))
 
             color = Gf.Vec3f(*display_color)
-            mesh_api.GetDisplayColorAttr().Set(color)
+            mesh_api.GetDisplayColorAttr().Set([color])
         except Exception:
             pass
 
