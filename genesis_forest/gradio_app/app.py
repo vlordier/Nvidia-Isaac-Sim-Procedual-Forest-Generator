@@ -206,7 +206,7 @@ def _build_generation_tab() -> None:
     with gr.Row():
         output_path = gr.Textbox(
             label="USD Output Path",
-            value="./forest_output",
+            value="./forest_output.usdc",
             info="Extension (.usda/.usdc) added automatically",
         )
         use_binary = gr.Checkbox(label="Binary USD (.usdc)", value=True)
@@ -330,8 +330,14 @@ def _generate_forest(
     density_veg: int,
     output_path: str,
     use_binary: bool,
-) -> str:
+) -> tuple[str, str]:
+    from pathlib import Path
     from backend.forest_generator import ForestGenerator, ForestConfig
+
+    models_path = Path(__file__).parent.parent / "models"
+    ext = ".usdc" if use_binary else ".usda"
+    if not output_path.endswith(ext):
+        output_path = output_path.rsplit(".", 1)[0] + ext
 
     nb, ns, np_ = normalize_proportions(birch_p, spruce_p, pine_p)
 
@@ -348,6 +354,7 @@ def _generate_forest(
         rockiness=rockiness,
         vegetation_enabled=vegetation_enabled,
         vegetation_density=density_veg,
+        asset_base_path=str(models_path),
         usd_output_path=output_path,
         use_binary_usd=use_binary,
     )
