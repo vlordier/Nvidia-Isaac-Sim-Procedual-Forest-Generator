@@ -76,14 +76,21 @@ class USDStage:
         camera_xform.AddRotateXYZOp().Set(Gf.Vec3f(35.0, 45.0, 0.0))
 
         dome_light = UsdLux.DomeLight.Define(stage, Sdf.Path("/World/domeLight"))
-        dome_light.CreateIntensityAttr().Set(1000.0)
-        dome_light.CreateColorAttr().Set(Gf.Vec3f(1.0, 0.98, 0.92))
+        dome_light.CreateIntensityAttr().Set(2000.0)
+        dome_light.CreateColorAttr().Set(Gf.Vec3f(0.9, 0.95, 1.0))
+        dome_light.CreateDiffuseAttr().Set(0.5)
 
-        dir_light = UsdLux.DistantLight.Define(stage, Sdf.Path("/World/dirLight"))
-        dir_light.CreateIntensityAttr().Set(2.0)
-        dir_light.CreateColorAttr().Set(Gf.Vec3f(1.0, 0.95, 0.85))
-        dir_light_xform = UsdGeom.Xformable(stage.GetPrimAtPath("/World/dirLight"))
-        dir_light_xform.AddRotateXYZOp().Set(Gf.Vec3f(-45.0, 30.0, 0.0))
+        dir_light = UsdLux.DistantLight.Define(stage, Sdf.Path("/World/sunLight"))
+        dir_light.CreateIntensityAttr().Set(3.0)
+        dir_light.CreateColorAttr().Set(Gf.Vec3f(1.0, 0.98, 0.9))
+        sun_xform = UsdGeom.Xformable(stage.GetPrimAtPath("/World/sunLight"))
+        sun_xform.AddRotateXYZOp().Set(Gf.Vec3f(-60.0, 30.0, 0.0))
+
+        fill_light = UsdLux.DistantLight.Define(stage, Sdf.Path("/World/fillLight"))
+        fill_light.CreateIntensityAttr().Set(0.8)
+        fill_light.CreateColorAttr().Set(Gf.Vec3f(0.7, 0.8, 1.0))
+        fill_xform = UsdGeom.Xformable(stage.GetPrimAtPath("/World/fillLight"))
+        fill_xform.AddRotateXYZOp().Set(Gf.Vec3f(-30.0, -120.0, 0.0))
 
     def define_terrain(
         self,
