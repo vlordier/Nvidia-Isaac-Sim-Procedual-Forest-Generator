@@ -5,7 +5,7 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Sequence
 
-from pxr import Gf, Usd, UsdGeom, Sdf, UsdPhysics, UsdLux
+from pxr import Gf, Usd, UsdGeom, UsdShade, Sdf, UsdPhysics, UsdLux
 
 try:
     from pxr import PhysxSchema
@@ -75,22 +75,23 @@ class USDStage:
         camera_xform.AddTranslateOp().Set(Gf.Vec3f(15.0, -15.0, 20.0))
         camera_xform.AddRotateXYZOp().Set(Gf.Vec3f(35.0, 45.0, 0.0))
 
-        dome_light = UsdLux.DomeLight.Define(stage, Sdf.Path("/World/domeLight"))
-        dome_light.CreateIntensityAttr().Set(2000.0)
-        dome_light.CreateColorAttr().Set(Gf.Vec3f(0.9, 0.95, 1.0))
-        dome_light.CreateDiffuseAttr().Set(0.5)
-
         dir_light = UsdLux.DistantLight.Define(stage, Sdf.Path("/World/sunLight"))
-        dir_light.CreateIntensityAttr().Set(3.0)
+        dir_light.CreateIntensityAttr().Set(5000.0)
         dir_light.CreateColorAttr().Set(Gf.Vec3f(1.0, 0.98, 0.9))
         sun_xform = UsdGeom.Xformable(stage.GetPrimAtPath("/World/sunLight"))
         sun_xform.AddRotateXYZOp().Set(Gf.Vec3f(-60.0, 30.0, 0.0))
 
         fill_light = UsdLux.DistantLight.Define(stage, Sdf.Path("/World/fillLight"))
-        fill_light.CreateIntensityAttr().Set(0.8)
+        fill_light.CreateIntensityAttr().Set(2500.0)
         fill_light.CreateColorAttr().Set(Gf.Vec3f(0.7, 0.8, 1.0))
         fill_xform = UsdGeom.Xformable(stage.GetPrimAtPath("/World/fillLight"))
         fill_xform.AddRotateXYZOp().Set(Gf.Vec3f(-30.0, -120.0, 0.0))
+
+        ambient_light = UsdLux.DistantLight.Define(stage, Sdf.Path("/World/ambientLight"))
+        ambient_light.CreateIntensityAttr().Set(500.0)
+        ambient_light.CreateColorAttr().Set(Gf.Vec3f(0.5, 0.55, 0.6))
+        ambient_xform = UsdGeom.Xformable(stage.GetPrimAtPath("/World/ambientLight"))
+        ambient_xform.AddRotateXYZOp().Set(Gf.Vec3f(90.0, 0.0, 0.0))
 
     def define_terrain(
         self,
@@ -220,17 +221,45 @@ class USDStage:
             mesh_api.GetPointsAttr().Set(verts)
             mesh_api.GetFaceVertexIndicesAttr().Set(tris.flatten())
             mesh_api.GetFaceVertexCountsAttr().Set(np.asarray([3] * len(tris)))
-
-            color = Gf.Vec3f(*display_color)
-            mesh_api.GetDisplayColorAttr().Set([color])
         except Exception:
             pass
+
+        material = self._create_color_material(display_color, prim_name)
+
+        if mesh_prim and material:
+            binding_api = UsdShade.MaterialBindingAPI(mesh_prim)
+            binding_api.Bind(material)
 
         xformable = UsdGeom.Xformable(mesh_prim)
         xformable.AddTranslateOp().Set(Gf.Vec3f(*position))
         xformable.AddOrientOp().Set(Gf.Quatf(*rotation))
         xformable.AddScaleOp().Set(Gf.Vec3f(*scale))
         xformable.SetResetXformStack(True)
+
+    def _create_color_material(
+        self,
+        color: tuple[float, float, float],
+        name_suffix: str,
+    ) -> Optional[UsdShade.Material]:
+        mat_path = f"/World/Materials/{name_suffix}_mat"
+        existing = self.stage.GetPrimAtPath(mat_path)
+        if existing:
+            return UsdShade.Material(existing)
+
+        material = UsdShade.Material.Define(self.stage, mat_path)
+        shader = UsdShade.Shader.Define(self.stage, f"{mat_path}/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
+        shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.8)
+        shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(1.0)
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+
+        parent = self.stage.GetPrimAtPath("/World/Materials")
+        if not parent:
+            parent = self.stage.DefinePrim("/World/Materials", "Scope")
+
+        return material
 
     def set_camera(
         self,
