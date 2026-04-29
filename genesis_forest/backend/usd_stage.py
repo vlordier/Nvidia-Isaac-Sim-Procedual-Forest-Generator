@@ -5,7 +5,34 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Sequence
 
-from pxr import Gf, Usd, UsdGeom, Sdf, UsdPhysics, PhysxSchema
+from pxr import Gf, Usd, UsdGeom, Sdf, UsdPhysics
+
+try:
+    from pxr import PhysxSchema
+except ImportError:
+    PhysxSchema = None
+
+
+def _load_mesh_geometry(file_path: str) -> tuple[np.ndarray, np.ndarray]:
+    import trimesh
+    scene = trimesh.load(file_path, force='scene')
+    if isinstance(scene, trimesh.Trimesh):
+        mesh = scene
+    elif isinstance(scene, trimesh.Scene):
+        if len(scene.geometry) == 0:
+            raise ValueError(f"No geometry in {file_path}")
+        mesh = list(scene.geometry.values())[0]
+        if not isinstance(mesh, trimesh.Trimesh):
+            mesh = mesh.copy()
+    else:
+        mesh = scene
+
+    vertices = np.array(mesh.vertices, dtype=np.float32)
+    if hasattr(mesh, 'faces'):
+        triangles = np.array(mesh.faces, dtype=np.uint32)
+    else:
+        triangles = np.array([], dtype=np.uint32)
+    return vertices, triangles
 
 
 class USDStage:
@@ -19,6 +46,7 @@ class USDStage:
             self.stage = Usd.Stage.CreateInMemory()
 
         self.output_path = output_path
+        self._mesh_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self._setup_world_defaults()
 
     def _setup_world_defaults(self) -> None:
@@ -48,9 +76,9 @@ class USDStage:
 
         xformable = UsdGeom.Xformable(prim)
         if position is not None:
-            xformable.AddTranslateOp().Set(Gf.Vec3d(*position))
+            xformable.AddTranslateOp().Set(Gf.Vec3f(*position))
         if orientation is not None:
-            xformable.AddOrientOp().Set(Gf.Quatd(*orientation))
+            xformable.AddOrientOp().Set(Gf.Quatf(*orientation))
 
         self._add_terrain_collision(prim)
         return mesh
@@ -59,9 +87,10 @@ class USDStage:
         UsdPhysics.CollisionAPI.Apply(prim)
         collision_api = UsdPhysics.MeshCollisionAPI.Apply(prim)
         collision_api.CreateApproximationAttr().Set("triangleMesh")
-        physx_collision_api = PhysxSchema.PhysxCollisionAPI.Apply(prim)
-        physx_collision_api.GetContactOffsetAttr().Set(0.001)
-        physx_collision_api.GetRestOffsetAttr().Set(0.00)
+        if PhysxSchema is not None:
+            physx_collision_api = PhysxSchema.PhysxCollisionAPI.Apply(prim)
+            physx_collision_api.GetContactOffsetAttr().Set(0.001)
+            physx_collision_api.GetRestOffsetAttr().Set(0.00)
 
     def add_tree(
         self,
@@ -79,7 +108,7 @@ class USDStage:
             rotation=rotation,
             scale=scale,
             parent=parent,
-            kind="Xform",
+            kind="Mesh",
         )
 
     def add_rock(
@@ -98,7 +127,7 @@ class USDStage:
             rotation=rotation,
             scale=scale,
             parent=parent,
-            kind="Xform",
+            kind="Mesh",
         )
 
     def add_vegetation(
@@ -117,8 +146,13 @@ class USDStage:
             rotation=rotation,
             scale=scale,
             parent=parent,
-            kind="Xform",
+            kind="Mesh",
         )
+
+    def _get_mesh_geometry(self, file_path: str) -> tuple[np.ndarray, np.ndarray]:
+        if file_path not in self._mesh_cache:
+            self._mesh_cache[file_path] = _load_mesh_geometry(file_path)
+        return self._mesh_cache[file_path]
 
     def _add_asset_prim(
         self,
@@ -128,7 +162,7 @@ class USDStage:
         rotation: tuple[float, float, float, float],
         scale: tuple[float, float, float],
         parent: str,
-        kind: str = "Xform",
+        kind: str = "Mesh",
     ) -> None:
         stage = self.stage
 
@@ -137,16 +171,21 @@ class USDStage:
             parent_prim = stage.DefinePrim(parent, "Scope")
 
         full_path = f"{parent}/{prim_name}"
-        xform_prim = stage.DefinePrim(full_path, kind)
+        mesh_prim = stage.DefinePrim(full_path, kind)
 
-        refs = xform_prim.GetReferences()
-        refs.AddReference(usd_path)
+        try:
+            verts, tris = self._get_mesh_geometry(usd_path)
+            mesh_api = UsdGeom.Mesh(mesh_prim)
+            mesh_api.GetPointsAttr().Set(verts)
+            mesh_api.GetFaceVertexIndicesAttr().Set(tris.flatten())
+            mesh_api.GetFaceVertexCountsAttr().Set(np.asarray([3] * len(tris)))
+        except Exception:
+            pass
 
-        xformable = UsdGeom.Xformable(xform_prim)
-        xformable.AddTranslateOp().Set(Gf.Vec3d(*position))
-        xformable.AddOrientOp().Set(Gf.Quatd(*rotation))
-        xformable.AddScaleOp().Set(Gf.Vec3d(*scale))
-
+        xformable = UsdGeom.Xformable(mesh_prim)
+        xformable.AddTranslateOp().Set(Gf.Vec3f(*position))
+        xformable.AddOrientOp().Set(Gf.Quatf(*rotation))
+        xformable.AddScaleOp().Set(Gf.Vec3f(*scale))
         xformable.SetResetXformStack(True)
 
     def remove_prim(self, path: str) -> bool:
@@ -191,3 +230,4 @@ class USDStage:
 
     def get_stage(self) -> Usd.Stage:
         return self.stage
+

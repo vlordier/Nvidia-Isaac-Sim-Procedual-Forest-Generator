@@ -1,10 +1,12 @@
 """
 Simple example: Generate a procedural forest and export to USD.
 """
+from pathlib import Path
 from backend.forest_generator import ForestGenerator, ForestConfig
 
 
 def main():
+    models_path = Path(__file__).parent.parent.parent / "models"
     config = ForestConfig(
         density=10,
         age_min=50,
@@ -18,8 +20,8 @@ def main():
         rockiness=5,
         vegetation_enabled=True,
         vegetation_density=5,
-        usd_output_path="./forest_output.usda",
-        asset_base_path="D:/temp_downloads",
+        usd_output_path="./forest_output.usdc",
+        asset_base_path=str(models_path),
     )
 
     def progress(p: float, msg: str):

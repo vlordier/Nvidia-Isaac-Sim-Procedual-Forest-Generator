@@ -54,12 +54,12 @@ def random_uniform_terrain(
     x = np.linspace(0, terrain.width * terrain.horizontal_scale, height_field_extracted.shape[0])
     y = np.linspace(0, terrain.length * terrain.horizontal_scale, height_field_extracted.shape[1])
 
-    from scipy import interpolate
-    f = interpolate.interp2d(y, x, height_field_extracted, kind="cubic")
+    from scipy.interpolate import RegularGridInterpolator
+    f = RegularGridInterpolator((y, x), height_field_extracted, method="cubic", bounds_error=False, fill_value=None)
 
     x_up = np.linspace(0, terrain.width * terrain.horizontal_scale, terrain.width)
     y_up = np.linspace(0, terrain.length * terrain.horizontal_scale, terrain.length)
-    z_up = np.rint(f(y_up, x_up))
+    z_up = f((y_up[:, None], x_up[None, :]))
 
     terrain.height_field_raw += z_up.astype(np.int16)
     return terrain

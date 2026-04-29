@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import warnings
 from pathlib import Path
 from typing import Optional, Callable
@@ -8,7 +9,6 @@ from typing import Optional, Callable
 import numpy as np
 
 import genesis as gs
-from genesis.utils.terrain import mesh_to_heightfield
 
 from .terrain import generate_terrain as _generate_terrain
 from .tree_placement import (
@@ -73,28 +73,11 @@ def _find_asset(path: str) -> Optional[str]:
 
 
 class AssetLoader:
-    """
-    Resolves and validates mesh assets for Genesis.
-
-    Genesis Mesh morph supports: USD (with [usd] extras), GLB, OBJ, STL, PLY.
-    We try to find the asset with any supported extension, then load with
-    appropriate options for each format.
-    """
-
     def __init__(self, base_path: str):
         self.base_path = Path(base_path)
-        self.usd_available = _check_usd_support()
         self.genesis_version = _get_genesis_version()
 
     def resolve(self, key: str) -> tuple[Optional[str], Optional[str]]:
-        """
-        Resolve an asset key to a file path.
-
-        Returns:
-            (resolved_path, format_hint) or (None, None) if not found
-
-        format_hint is 'usd', 'glb', or 'obj' for Genesis loader selection.
-        """
         candidate = self.base_path / key
         found = _find_asset(str(candidate))
         if found is None:
@@ -102,13 +85,6 @@ class AssetLoader:
 
         ext = Path(found).suffix.lower()
         if ext in (".usd", ".usda", ".usdc"):
-            if not self.usd_available:
-                warnings.warn(
-                    f"USD asset {found} requires 'pip install -e .[usd]' + omniverse-kit. "
-                    f"Skipping. Convert to .glb or .obj for fallback.",
-                    UserWarning,
-                )
-                return None, None
             return found, "usd"
         elif ext in (".glb", ".gltf"):
             return found, "glb"
@@ -125,15 +101,6 @@ class AssetLoader:
         scale: tuple,
         for_visualization: bool = True,
     ) -> dict:
-        """
-        Build gs.morphs.Mesh kwargs for a resolved asset.
-
-        Key settings:
-        - fixed=True: no physics DOFs, entity is static
-        - collision=False: no convex hull collision (trees are static)
-        - decimate=False: preserve visual quality (decimation is for physics speed)
-        - parse_glb_with_trimesh=True: use trimesh parser for GLB (better material support)
-        """
         kwargs = dict(
             file=resolved_path,
             pos=pos,
@@ -151,23 +118,16 @@ class AssetLoader:
 
 
 ASSET_PATHS = {
-    "Rock": "Rock_obj/Rock.usd",
-    "Blueberry": "Blueberry_obj/Blueberry.usd",
-    "Bush": "Bush_obj/Bush.usd",
-    "Birch": "Birch_obj/Birch.usd",
-    "Spruce": "Spruce_obj/Spruce.usd",
-    "Pine": "Pine_obj/Pine.usd",
+    "Rock": "Rock_obj/Rock.obj",
+    "Blueberry": "Blueberry_obj/Blueberry.obj",
+    "Bush": "Bush_obj/Bush.obj",
+    "Birch": "Birch_obj/birch.obj",
+    "Spruce": "Spruce_obj/Spruce.obj",
+    "Pine": "Pine_obj/untitled.obj",
 }
 
 
 class HeightSampler:
-    """
-    Heightfield sampler for terrain.
-
-    Provides O(1) height lookup at any world (x, y) via bilinear interpolation
-    of the underlying heightfield grid.
-    """
-
     def __init__(
         self,
         height_field: np.ndarray,
@@ -218,20 +178,6 @@ class HeightSampler:
 
 
 class ForestGenerator:
-    """
-    Genesis-authoritative procedural forest generator.
-
-    Pipeline:
-      1. Validate all asset paths exist
-      2. Build Genesis terrain from heightfield (local coords)
-      3. HeightSampler: O(1) bilinear height lookup at any (x, y)
-      4. Place tree/rock/vegetation entities at correct Z
-         - fixed=True (static, no physics DOFs)
-         - collision=False (no convex hull overhead)
-      5. scene.build() + scene.step() — let physics settle
-      6. Query final transforms from Genesis → write to OpenUSD
-    """
-
     def __init__(self, config: Optional["ForestConfig"] = None):
         self.config = config or ForestConfig()
         self._backend = _detect_genesis_backend()
@@ -244,7 +190,10 @@ class ForestGenerator:
     def _init_scene(self) -> gs.Scene:
         if self._scene is not None:
             return self._scene
+
+        _ensure_headless_patch()
         gs.init(backend=self._backend)
+
         self._scene = gs.Scene(
             rigid_options=gs.options.RigidOptions(
                 enable_collision=True,
@@ -255,60 +204,83 @@ class ForestGenerator:
         return self._scene
 
     def _validate_assets(self) -> dict[str, tuple[str, str]]:
-        """
-        Validate all required assets exist and can be loaded.
-
-        Returns:
-            dict mapping asset key -> (resolved_path, format_hint)
-
-        Raises:
-            FileNotFoundError if any required asset is missing
-        """
         base = self.config.asset_base_path
         loader = AssetLoader(base)
         resolved = {}
 
-        for key, rel_path in ASSET_PATHS.items():
+        n_trees = int(self.config.density * self.config.area_x * self.config.area_y / 100.0)
+        n_rocks = int(self.config.rockiness * self.config.area_x * self.config.area_y / 100.0)
+        n_veg = int(self.config.vegetation_density * self.config.area_x * self.config.area_y / 100.0) if self.config.vegetation_enabled else 0
+
+        needed_keys = set()
+        if n_trees > 0:
+            needed_keys.update({"Birch", "Spruce", "Pine"})
+        if n_rocks > 0:
+            needed_keys.add("Rock")
+        if n_veg > 0:
+            needed_keys.update({"Bush", "Blueberry"})
+
+        missing = []
+        for key in needed_keys:
+            rel_path = ASSET_PATHS[key]
             found, fmt = loader.resolve(rel_path)
             if found is None:
-                raise FileNotFoundError(
-                    f"Asset not found: {rel_path} (searched in {base}). "
-                    f"Install USD support: pip install -e .[usd] or convert to .glb/.obj"
-                )
-            resolved[key] = (found, fmt)
+                missing.append(f"  {key}: {rel_path} (searched in {base})")
+            else:
+                resolved[key] = (found, fmt)
+
+        if missing:
+            msg = (
+                "Required assets not found:\n" + "\n".join(missing) +
+                "\n\nInstall assets at the configured path, or convert to .glb/.obj."
+            )
+            raise FileNotFoundError(msg)
 
         return resolved
 
     def build_terrain(self) -> HeightSampler:
+        import tempfile
+        from genesis.utils.terrain import mesh_to_heightfield
+
         cfg = self.config
+        hs = 0.25
+        vs = 0.005
+
         verts, tris, world_pos, world_orient = _generate_terrain(
             width=cfg.area_x,
             length=cfg.area_y,
-            horizontal_scale=0.25,
-            vertical_scale=0.005,
+            horizontal_scale=hs,
+            vertical_scale=vs,
             roughness=cfg.roughness,
             slope_threshold=1.5,
         )
 
-        hf, xs, ys = mesh_to_heightfield(
-            verts,
-            tris,
-            horizontal_scale=0.25,
-            vertical_scale=0.005,
-            vertical_bounds=(verts[:, 2].min(), verts[:, 2].max()),
-        )
+        tmp_dir = tempfile.gettempdir()
+        obj_path = os.path.join(tmp_dir, f"terrain_{os.getpid()}.obj")
+        try:
+            with open(obj_path, "w") as f:
+                for v in verts:
+                    f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
+                for t in tris:
+                    f.write(f"f {t[0]+1} {t[1]+1} {t[2]+1}\n")
+
+            hf_world_z, xs, ys = mesh_to_heightfield(obj_path, spacing=hs)
+        finally:
+            if os.path.exists(obj_path):
+                os.unlink(obj_path)
+
+        hf_grid = hf_world_z / vs
 
         scene = self._init_scene()
         terrain_entity = scene.add_entity(
             gs.morphs.Terrain(
-                height_field=hf,
-                horizontal_scale=0.25,
-                vertical_scale=0.005,
+                height_field=hf_grid.astype(np.float32),
+                horizontal_scale=hs,
+                vertical_scale=vs,
                 pos=(0.0, 0.0, 0.0),
+                visualization=True,
             ),
         )
-
-        scene.build()
 
         self._terrain_entity = terrain_entity
         self._terrain_verts = verts
@@ -317,9 +289,9 @@ class ForestGenerator:
         self._terrain_world_orient = world_orient
 
         self._height_sampler = HeightSampler(
-            height_field=hf,
-            horizontal_scale=0.25,
-            vertical_scale=0.005,
+            height_field=hf_grid,
+            horizontal_scale=hs,
+            vertical_scale=vs,
             world_pos=(float(world_pos[0]), float(world_pos[1]), float(world_pos[2])),
         )
 
@@ -401,14 +373,6 @@ class ForestGenerator:
         self._all_placements = all_placements
 
     def _settle_physics(self, n_steps: int = 10) -> None:
-        """
-        Run scene.step() to let physics settle.
-
-        Even though trees are fixed (no DOFs), this ensures the terrain
-        collision is properly resolved and Genesis world is consistent.
-
-        With fixed=True entities, scene.step() is essentially free (no joint solving).
-        """
         if self._scene is None:
             return
         for _ in range(n_steps):
@@ -419,8 +383,6 @@ class ForestGenerator:
         resolved_assets: dict,
         progress_callback: Optional[Callable[[float, str], None]] = None,
     ) -> USDStage:
-        from .usd_stage import USDStage
-
         output_path = self.config.usd_output_path
         usd_path = output_path.rsplit(".", 1)[0] + (".usdc" if self.config.use_binary_usd else ".usda")
 
@@ -496,7 +458,12 @@ class ForestGenerator:
         self.place_entities(resolved_assets, progress_callback)
 
         if progress_callback:
-            progress_callback(0.65, "Settling physics (scene.step())...")
+            progress_callback(0.65, "Building scene...")
+
+        self._scene.build()
+
+        if progress_callback:
+            progress_callback(0.70, "Settling physics (scene.step())...")
 
         self._settle_physics(n_steps=10)
 
@@ -615,3 +582,23 @@ class GenerationResult:
         self.roughness = roughness
         self.genesis_version = genesis_version
         self.usd_support = usd_support
+
+
+def _ensure_headless_patch() -> None:
+    import sys
+    if getattr(sys, '_genesis_headless_patched', False):
+        return
+
+    try:
+        import pyglet
+        pyglet.options["headless"] = True
+    except Exception:
+        pass
+
+    try:
+        import genesis as _gs
+        _gs.vis.Visualizer.build = lambda self: setattr(self, "_is_built", True)
+    except Exception:
+        pass
+
+    sys._genesis_headless_patched = True
