@@ -134,6 +134,7 @@ class USDStage:
         rotation: tuple[float, float, float, float],
         scale: tuple[float, float, float],
         parent: str = "/World/Tree_parent",
+        display_color: tuple[float, float, float] = (0.13, 0.36, 0.13),
     ) -> None:
         self._add_asset_prim(
             prim_name=prim_name,
@@ -143,6 +144,7 @@ class USDStage:
             scale=scale,
             parent=parent,
             kind="Mesh",
+            display_color=display_color,
         )
 
     def add_rock(
@@ -153,6 +155,7 @@ class USDStage:
         rotation: tuple[float, float, float, float],
         scale: tuple[float, float, float],
         parent: str = "/World/Rock_parent",
+        display_color: tuple[float, float, float] = (0.4, 0.35, 0.3),
     ) -> None:
         self._add_asset_prim(
             prim_name=prim_name,
@@ -162,6 +165,7 @@ class USDStage:
             scale=scale,
             parent=parent,
             kind="Mesh",
+            display_color=display_color,
         )
 
     def add_vegetation(
@@ -172,6 +176,7 @@ class USDStage:
         rotation: tuple[float, float, float, float],
         scale: tuple[float, float, float],
         parent: str = "/World/Bush_parent",
+        display_color: tuple[float, float, float] = (0.15, 0.35, 0.1),
     ) -> None:
         self._add_asset_prim(
             prim_name=prim_name,
@@ -181,6 +186,7 @@ class USDStage:
             scale=scale,
             parent=parent,
             kind="Mesh",
+            display_color=display_color,
         )
 
     def _get_mesh_geometry(self, file_path: str) -> tuple[np.ndarray, np.ndarray]:
@@ -197,6 +203,7 @@ class USDStage:
         scale: tuple[float, float, float],
         parent: str,
         kind: str = "Mesh",
+        display_color: tuple[float, float, float] = (0.5, 0.5, 0.5),
     ) -> None:
         stage = self.stage
 
@@ -213,6 +220,9 @@ class USDStage:
             mesh_api.GetPointsAttr().Set(verts)
             mesh_api.GetFaceVertexIndicesAttr().Set(tris.flatten())
             mesh_api.GetFaceVertexCountsAttr().Set(np.asarray([3] * len(tris)))
+
+            color = Gf.Vec3f(*display_color)
+            mesh_api.GetDisplayColorAttr().Set(color)
         except Exception:
             pass
 
