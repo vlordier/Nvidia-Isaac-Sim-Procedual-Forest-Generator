@@ -366,8 +366,8 @@ def create_spiral_flythrough(
 def create_forest_drone_flythrough(
     area_x: float,
     area_y: float,
-    start_x: float = 2.0,
-    start_y: float = 2.0,
+    start_x: float = -12.0,
+    start_y: float = 3.0,
     height: float = 2.0,
     duration: float = 15.0,
     figure_8: bool = True,
