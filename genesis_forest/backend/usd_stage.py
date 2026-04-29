@@ -5,7 +5,7 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Sequence
 
-from pxr import Gf, Usd, UsdGeom, Sdf, UsdPhysics
+from pxr import Gf, Usd, UsdGeom, Sdf, UsdPhysics, UsdLux
 
 try:
     from pxr import PhysxSchema
@@ -57,6 +57,33 @@ class USDStage:
         physics_scene = UsdPhysics.Scene.Define(stage, Sdf.Path("/World/physicsScene"))
         physics_scene.CreateGravityDirectionAttr().Set(Gf.Vec3f(0.0, 0.0, -1.0))
         physics_scene.CreateGravityMagnitudeAttr().Set(981.0)
+
+        self._add_default_camera_and_lighting()
+
+    def _add_default_camera_and_lighting(self) -> None:
+        stage = self.stage
+
+        camera_prim = stage.DefinePrim("/World/mainCamera", "Camera")
+        camera = UsdGeom.Camera(camera_prim)
+        camera.CreateHorizontalApertureAttr().Set(20.0)
+        camera.CreateVerticalApertureAttr().Set(11.25)
+        camera.CreateHorizontalApertureOffsetAttr().Set(0.0)
+        camera.CreateFocalLengthAttr().Set(50.0)
+        camera.CreateClippingRangeAttr().Set(Gf.Vec2f(0.1, 10000.0))
+
+        camera_xform = UsdGeom.Xformable(camera_prim)
+        camera_xform.AddTranslateOp().Set(Gf.Vec3f(15.0, -15.0, 20.0))
+        camera_xform.AddRotateXYZOp().Set(Gf.Vec3f(35.0, 45.0, 0.0))
+
+        dome_light = UsdLux.DomeLight.Define(stage, Sdf.Path("/World/domeLight"))
+        dome_light.CreateIntensityAttr().Set(1000.0)
+        dome_light.CreateColorAttr().Set(Gf.Vec3f(1.0, 0.98, 0.92))
+
+        dir_light = UsdLux.DistantLight.Define(stage, Sdf.Path("/World/dirLight"))
+        dir_light.CreateIntensityAttr().Set(2.0)
+        dir_light.CreateColorAttr().Set(Gf.Vec3f(1.0, 0.95, 0.85))
+        dir_light_xform = UsdGeom.Xformable(stage.GetPrimAtPath("/World/dirLight"))
+        dir_light_xform.AddRotateXYZOp().Set(Gf.Vec3f(-45.0, 30.0, 0.0))
 
     def define_terrain(
         self,
@@ -188,6 +215,63 @@ class USDStage:
         xformable.AddScaleOp().Set(Gf.Vec3f(*scale))
         xformable.SetResetXformStack(True)
 
+    def set_camera(
+        self,
+        position: tuple[float, float, float],
+        look_at: tuple[float, float, float],
+        focal_length: float = 50.0,
+    ) -> None:
+        camera_prim = self.stage.GetPrimAtPath("/World/mainCamera")
+        if not camera_prim:
+            camera_prim = self.stage.DefinePrim("/World/mainCamera", "Camera")
+        camera = UsdGeom.Camera(camera_prim)
+        camera.CreateHorizontalApertureAttr().Set(20.0)
+        camera.CreateVerticalApertureAttr().Set(11.25)
+        camera.CreateFocalLengthAttr().Set(focal_length)
+        camera.CreateClippingRangeAttr().Set(Gf.Vec2f(0.1, 10000.0))
+
+        dx = look_at[0] - position[0]
+        dy = look_at[1] - position[1]
+        dz = look_at[2] - position[2]
+        import math
+        horiz = math.sqrt(dx * dx + dy * dy)
+        yaw = math.degrees(math.atan2(dx, -dy)) if horiz > 0 else 0.0
+        pitch = math.degrees(math.atan2(dz, horiz))
+
+        camera_xform = UsdGeom.Xformable(camera_prim)
+        existing_order = camera_prim.GetAttribute("xformOpOrder")
+        if existing_order:
+            existing_order.Clear()
+        camera_xform.SetResetXformStack(True)
+        camera_xform.AddTranslateOp().Set(Gf.Vec3f(*position))
+        camera_xform.AddRotateXYZOp().Set(Gf.Vec3f(pitch, yaw, 0.0))
+
+    def render_to_image(
+        self,
+        output_path: str,
+        width: int = 1920,
+        renderer: str = "Metal",
+        camera_path: str = "/World/mainCamera",
+    ) -> str:
+        import subprocess
+        usd_path = self.output_path
+        if not usd_path:
+            usd_path = "/tmp/temp_render.usdc"
+            self.save_usdc(usd_path)
+
+        cmd = [
+            "usdrecord",
+            usd_path,
+            output_path,
+            "--imageWidth", str(width),
+            "--renderer", renderer,
+            "--cam", camera_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"usdrecord failed: {result.stderr}")
+        return output_path
+
     def remove_prim(self, path: str) -> bool:
         if self.stage.GetPrimAtPath(path):
             self.stage.RemovePrim(path)
@@ -230,4 +314,3 @@ class USDStage:
 
     def get_stage(self) -> Usd.Stage:
         return self.stage
-

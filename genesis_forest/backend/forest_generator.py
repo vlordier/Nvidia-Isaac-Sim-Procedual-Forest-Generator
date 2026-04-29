@@ -50,6 +50,11 @@ def _get_genesis_version() -> tuple[int, ...]:
     return (0, 0)
 
 
+def _check_usd_support() -> bool:
+    import shutil
+    return shutil.which("usdrecord") is not None
+
+
 SUPPORTED_MESH_EXTENSIONS = {".usd", ".usda", ".usdc", ".obj", ".glb", ".gltf", ".stl", ".ply"}
 
 
