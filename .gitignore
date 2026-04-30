@@ -1,12 +1,25 @@
-# all folders starting with _ are local
-_*/
+# local config folders
+_*
 
+# OS
 .DS_Store
+
+# IDE
 **/.vscode/ipch
-
-# byte-compiled python files
-*.py[cod]
-
 /.vs
 
+# Python
+*.py[cod]
+__pycache__/
+.venv/
+
+# Generated outputs
+*.usdc
+*.usda
+*.usd
+*.usdz
+*.mp4
+*.png
+
+# Isaac Sim app symlink
 /app

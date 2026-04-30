@@ -1,42 +1,117 @@
-# Terrain Generation and Forest Rendering Extension
+# Genesis Procedural Forest Generator
 
-This project implements an extension for NVIDIA Isaac Sim for generating terrain and rendering forests within the simulation environment. It utilizes USD (Universal Scene Description) for scene representation and manipulation, allowing for efficient handling of large-scale environments. The extension was first made for virtual robot testing based on parametrized data taken from real world forests.
+Procedural forest generation pipeline: **Genesis Physics** → **OpenUSD** → `usdrecord` → **fly-through video**. Colored materials, cinematic camera paths, and GPU-accelerated terrain + entity placement.
+
+```
+Genesis (physics + GPU raycast)
+         │
+         ▼
+  OpenUSD stage (.usdc) + UsdPreviewSurface materials
+         │
+         ▼
+  usdrecord + ffmpeg → MP4 video
+```
+
+## Quick Start
+
+```bash
+# Install dependencies
+pip install genesis-world numpy scipy noise torch
+
+# Generate forest + render fly-through
+cd genesis_forest
+python -m examples.forest_video
+
+# Or use the Gradio UI
+python -m gradio_app.app
+# → http://localhost:7860
+```
+
+## Commands
+
+```bash
+# Generate to binary USD
+uv run --with genesis-world,numpy,scipy,noise,torch,usd-core,trimesh \
+  python -m examples.simple_forest
+
+# Render a single frame
+usdrecord forest_output.usdc frame.png -w 1280 --renderer=Metal
+
+# Render fly-through video (requires ffmpeg)
+uv run --with genesis-world,numpy,scipy,noise,torch,usd-core \
+  python -m examples.forest_video
+```
+
+## Architecture
+
+```
+1. build_terrain_genesis()
+     └── Genesis Terrain morph from Perlin noise heightfield
+
+2. place_entities_genesis()
+     └── Place tree/rock/bush entities at Z=100 (above terrain)
+
+3. raycast_heights()
+     └── scene.raycast_batch() — GPU-parallel batched raycast
+         Drops entities onto terrain surface
+
+4. build_usd_stage()
+     └── Query final transforms from Genesis entities
+         Write mesh prims with UsdPreviewSurface materials to USD
+         Add 3x DistantLight + camera for rendering
+```
 
 ## Features
 
-- **Terrain Generation**: The extension can generate terrain based on specified parameters such as size, roughness, and terrain type.
-- **Forest Rendering**: Users can generate forests with different types of trees (e.g., birch, spruce, pine) and adjust parameters like density and age range.
-- **HDR Environment**: The extension supports the addition and removal of HDR (High Dynamic Range) environment textures for realistic lighting.
-- **Rocks Generation**: Rocks can be generated on the terrain with adjustable rockiness parameters.
-- **Vegitation Generation**: Other types of vegetation can also be generated alongside trees, with customizable density.
-- **Collision Detection**: Terrain collision properties are automatically configured for physics simulation.
-- **User Interface**: The extension provides a user-friendly UI for adjusting parameters and triggering actions.
+- **Terrain**: Perlin noise heightfields with configurable roughness
+- **Forest**: Birch, Spruce, Pine trees with density/age parameters
+- **Rocks & Vegetation**: Rocks, Bushes, Blueberries — randomized placement
+- **Colored Materials**: UsdPreviewSurface with per-type diffuse colors
+- **Cinematic Camera**: Catmull-Rom spline fly-through with figure-8 or linear paths
+- **Video Rendering**: usdrecord + ffmpeg → MP4 (supports Metal, Storm, Embree renderers)
+- **Gradio UI**: Web interface for parameter tuning
+- **UE5 Export**: Binary USD with Lumen + Nanite support
 
-## Installation
+## Module Reference
 
-1. Clone the repository to your local machine.
-2. Open the NVIDIA Isaac Sim environment.
-3. Copy the extension files into the appropriate directory within the Isaac Sim environment.
-4. Enable the extension from the Isaac Sim environment's menu.
+| Path | Purpose |
+|------|---------|
+| `backend/forest_generator.py` | `ForestGenerator`: terrain → place → raycast → USD |
+| `backend/terrain.py` | Perlin noise terrain → heightfield + trimesh |
+| `backend/tree_placement.py` | Placement logic + GPU batched raycast |
+| `backend/usd_stage.py` | USD stage: meshes, materials, camera, lighting |
+| `backend/fly_camera.py` | FlyCamera, PathFlyCamera, video rendering |
+| `examples/forest_video.py` | Generate forest + render fly-through video |
+| `examples/ue5_export.py` | Optimized export for UE5 |
+| `examples/simple_forest.py` | Minimal generation example |
+| `gradio_app/app.py` | Gradio web UI |
 
-## Usage
+## Renderers
 
-1. Open the extension from the menu in the Isaac Sim environment.
-2. Adjust the parameters in the UI for terrain generation, forest rendering, HDR environment, rocks generation, and other options.
-3. Click the corresponding buttons to trigger actions such as generating terrain, forests, rocks, or HDR environments.
-4. Interact with the simulation environment and observe the generated terrain, forests, and other elements.
-5. Save your simulation scenario and project as needed.
+| Renderer | Platform | Notes |
+|----------|----------|-------|
+| Metal | macOS | Default, GPU-accelerated |
+| Storm | All | OpenGL-based |
+| Embree | All | CPU-based |
 
-## Requirements
+## Hardware Support
 
-- NVIDIA Isaac Sim
-- Python (for USD scripting)
+Genesis auto-detects: **NVIDIA CUDA** → **AMD ROCm** → **Apple Metal** → **CPU fallback**.
 
-## Credits
+## Legacy
 
-This project was developed by Joel Ventola as part of research into virtual mobile robot testing conducted by Biomimetics and Intelligent Systems Group
-from the University of Oulu.
+The original Isaac Sim extension is preserved in `exts/company.hello.world/` for reference. The core pipeline was rewritten for Genesis with GPU batched raycasting and standalone OpenUSD rendering.
+
+## UE5 Import
+
+```bash
+python -m examples.ue5_export
+# In UE5:
+#   1. Enable USDImporter plugin
+#   2. File → Import into Level → forest_ue5.usdc
+#   3. Rendering: Lumen + Nanite + Virtual Shadow Maps
+```
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+MIT — see [LICENSE](LICENSE).
