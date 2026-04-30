@@ -382,5 +382,10 @@ def _generate_forest(
 
 demo = build_ui()
 
-if __name__ == "__main__":
+
+def main():
     demo.launch()
+
+
+if __name__ == "__main__":
+    main()
