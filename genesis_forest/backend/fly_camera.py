@@ -163,7 +163,13 @@ def render_flythrough(
         camera_xform.AddRotateXYZOp().Set(Gf.Vec3f(pitch, yaw, 0.0))
 
         frame_path = f"{tmp_dir}/frame_{frame:04d}.png"
-        stage.GetRootLayer().Export(frame_path)
+        stage.GetRootLayer().Export(usd_path)
+        subprocess.run(
+            ["usdrecord", usd_path, frame_path,
+             "--imageWidth", str(width), "--renderer", renderer,
+             "--camera", camera_name, "--complexity", "medium"],
+            capture_output=True, text=True,
+        )
 
         if progress_callback:
             progress_callback((frame + 1) / total_frames, f"Frame {frame + 1}/{total_frames}")
