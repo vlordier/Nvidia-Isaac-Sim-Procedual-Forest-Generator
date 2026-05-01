@@ -21,5 +21,8 @@ __pycache__/
 *.mp4
 *.png
 
+# Showcase images (committed)
+!docs/images/*.png
+
 # Isaac Sim app symlink
 /app

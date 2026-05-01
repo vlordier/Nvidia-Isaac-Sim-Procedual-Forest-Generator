@@ -12,6 +12,11 @@ Genesis (physics + GPU raycast)
   usdrecord + ffmpeg → MP4 video
 ```
 
+<p align="center">
+  <img src="docs/images/overview.png" alt="Forest overview" width="48%">
+  <img src="docs/images/ground_level.png" alt="Ground-level fly-through" width="48%">
+</p>
+
 ## Quick Start
 
 ```bash
